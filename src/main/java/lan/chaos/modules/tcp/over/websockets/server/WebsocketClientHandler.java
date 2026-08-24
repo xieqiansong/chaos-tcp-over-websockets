@@ -2,7 +2,6 @@ package lan.chaos.modules.tcp.over.websockets.server;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.websocketx.*;
@@ -79,7 +78,8 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
                 this.tcpChannel.writeAndFlush(frame.content());
             } else if (frame instanceof BinaryWebSocketFrame) {
                 log.debug("BinaryWebSocketFrame msg");
-                ByteBuf buff = Unpooled.copiedBuffer(frame.content());
+                // 零拷贝共享帧内容底层内存，引用计数 +1，写完成后由 Netty 自动 release
+                ByteBuf buff = frame.content().retainedDuplicate();
                 this.tcpChannel.writeAndFlush(buff);
             } else if (frame instanceof PingWebSocketFrame) {
                 log.debug("心跳请求");

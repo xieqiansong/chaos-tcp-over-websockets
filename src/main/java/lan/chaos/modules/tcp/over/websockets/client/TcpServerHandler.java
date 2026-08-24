@@ -2,7 +2,6 @@ package lan.chaos.modules.tcp.over.websockets.client;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketClient;
@@ -44,7 +43,8 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         WebsocketClient websocketClient = websocketClientMap.get(channelId);
         if (websocketClient != null) {
             log.debug("发送给 websocket client");
-            ByteBuf buff = Unpooled.copiedBuffer(buf);
+            // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
+            ByteBuf buff = buf.retainedDuplicate();
             websocketClient.writeAndFlush(buff);
         }
     }

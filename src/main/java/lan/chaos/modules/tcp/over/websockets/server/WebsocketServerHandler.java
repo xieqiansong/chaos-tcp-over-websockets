@@ -82,7 +82,8 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             String channelId = ctx.channel().id().asLongText();
             TcpClient tcpClient = tcpClientMap.get(channelId);
             if (tcpClient != null) {
-                ByteBuf buff = Unpooled.copiedBuffer(((BinaryWebSocketFrame) webSocketFrame).content());
+                // 零拷贝共享帧内容底层内存，引用计数 +1，写完成后由 Netty 自动 release
+                ByteBuf buff = ((BinaryWebSocketFrame) webSocketFrame).content().retainedDuplicate();
                 tcpClient.writeAndFlush(buff);
             }
         }

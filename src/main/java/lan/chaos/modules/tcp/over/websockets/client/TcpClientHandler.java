@@ -2,7 +2,6 @@ package lan.chaos.modules.tcp.over.websockets.client;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -28,7 +27,8 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
         ByteBuf buf = (ByteBuf) msg;
         log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));
         if (websocketChannel != null) {
-            ByteBuf tcpData = Unpooled.copiedBuffer(buf);
+            // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
+            ByteBuf tcpData = buf.retainedDuplicate();
             log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(tcpData));
             BinaryWebSocketFrame binaryWebSocketFrame = new BinaryWebSocketFrame(tcpData);
             websocketChannel.writeAndFlush(binaryWebSocketFrame);
