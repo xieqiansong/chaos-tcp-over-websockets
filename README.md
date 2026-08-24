@@ -79,12 +79,33 @@ java -jar target/tcp-over-websockets.jar client 13306 ws://tunnel.example.com/fo
 
 > 若企业仅开放 HTTPS（443），在 `server` 块增加 443/SSL 监听，client 端把 `ws://` 换成 `wss://` 即可，其余配置不变。
 
+## 性能基准（JMH）
+
+隧道转发路径上的核心开销是 `ByteBuf` 的拷贝策略。当前实现每个转发环节都调用 `Unpooled.copiedBuffer(...)` 做一次**全量拷贝**，本仓库在 `benchmark/` 子模块内用 [JMH](https://github.com/openjdk/jmh) 对三种策略做了微基准对拍（单线程、Throughput、ops/s）：
+
+| 策略 | 1KB | 64KB | 1MB |
+|---|---|---|---|
+| `copiedBuffer`（全量拷贝，当前实现） | ~9.7M | ~134K | ~8.5K |
+| `duplicate`（零拷贝视图，不计数） | ~200M | ~197M | ~199M |
+| `retainedDuplicate`（零拷贝 + 引用计数） | ~51M | ~51M | ~51M |
+
+**结论**：`copiedBuffer` 的吞吐随消息尺寸几乎线性下降（1KB → 1MB 掉了约 1000 倍），而零拷贝系列与消息尺寸无关。当隧道承载大包（如二进制、数据库大结果集）时，`retainedDuplicate` / `duplicate` 相比全量拷贝有数量级优势，是最值得做的零拷贝优化方向。
+
+> 说明：`duplicate` 的 ~170M 含 JVM 编译器逃逸分析/标量替换的假象，且其视图**不持有引用计数**，真实转发中底层 ByteBuf 一旦被 `release()` 即会读写悬空，故**不宜采用**，仅供对比观察；`retainedDuplicate` 会真实递增 refCnt（CAS，JIT 无法消除），数字可信且不随尺寸下降，是迁移零拷贝的推荐策略，同时需在写端配合 `release()` 做好生命周期管理。
+
+```bash
+# 运行基准（基准类位于 src/test，JMH 依赖为 test scope）
+mvn -q test-compile exec:java "-Dexec.mainClass=org.openjdk.jmh.Main" "-Dexec.classpathScope=test" "-Dexec.args=BufCopyStrategyBenchmark -f 0 -r 1"
+```
+
+> 说明：`benchmark/` 目录已迁移为标准 Maven 推荐的 `src/test/java`，JMH 依赖与注解处理器均声明为 `test` scope，不进入主发布 jar。exec 环境下 JMH 子进程 fork 依赖自身 classpath，故使用 `-f 0` 进程内运行便于验证；如需正式性能数据，可在独立 fork 环境运行完整参数。
+
 ## 构建
 
 - JDK 8+
 - Maven
 
-依赖自动下载（netty-all / commons-collections4 / logback / lombok）。
+依赖自动下载（netty-all / commons-collections4 / logback / lombok / JMH 仅用于 `benchmark/` 子模块）。
 
 ## 参考来源
 
