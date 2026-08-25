@@ -39,7 +39,7 @@ public class TcpServer implements Closeable {
 
             bootstrap.group(bossGroup, workGroup)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
-                   .childOption(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(1024)) // [DIAG] 固定收包 1KB
+                    .childOption(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(4 * 1024)) // [DIAG] 固定收包 4KB
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         protected void initChannel(SocketChannel ch) {

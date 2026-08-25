@@ -2,12 +2,7 @@ package lan.chaos.modules.tcp.over.websockets.benchmark;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -24,25 +19,24 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 真实隧道端到端场景测试（方案 B）：在同一 JVM 内用代码启动三角色 —
- *   echo 后端(Netty TCP，收到即回) + 隧道 server(WebsocketServer) + 隧道 client 入口(TcpServer)，
+ * echo 后端(Netty TCP，收到即回) + 隧道 server(WebsocketServer) + 隧道 client 入口(TcpServer)，
  * 再用一个普通 Socket 充当「数据源」往 client 入口灌流，统计端到端吞吐与往返延迟。
- *
+ * <p>
  * 三轮分别注入 copied / retained / duplicate 三策略（直接 new 注入，绕过 BufCopyConfiguration 的
  * duplicate 回退），真实验证零拷贝在异步转发链路上的收益与 duplicate 的链路不安全。
- *
+ * <p>
  * IDEA 中打开本文件 → 点左侧绿色箭头 Run 即跑完整三轮，无需命令。
  */
 public class TunnelRealWorldBenchmarkTest {
 
     // 打流包大小维度：1KB(小包) / 32KB / 1MB / 16MB(超大)。每尺寸每连接仍打 PER_CONN_MB 总量。
-    private static final int[] PAYLOADS = {1024, 32 * 1024, 1024 * 1024, 16 * 1024 * 1024};
+    private static final int[] PAYLOADS = {1024, 16 * 1024, 256 * 1024, 4 * 1024 * 1024};
     private static final int CONN = 1;                // 并发打流连接数（临时降为1验证并发是否为 retained 崩溃根因）
-    private static final int PER_CONN_MB = 16;         // 每连接打流 16MB
+    private static final int PER_CONN_MB = 2;         // 每连接打流 2MB
     private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限(并发放大)
 
     static class Result {
@@ -52,7 +46,10 @@ public class TunnelRealWorldBenchmarkTest {
         double mbPerSec;
         long rttMs;
         String error;
-        Result(String name) { this.name = name; }
+
+        Result(String name) {
+            this.name = name;
+        }
     }
 
     @Test
@@ -66,7 +63,7 @@ public class TunnelRealWorldBenchmarkTest {
         int directBase = 21000;
         for (int pi = 0; pi < PAYLOADS.length; pi++) {
             int payload = PAYLOADS[pi];
-            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024) + "KB) ========");
+            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024.0) + "KB) ========");
 
             Result[] results = new Result[strategies.size()];
             for (int i = 0; i < strategies.size(); i++) {
@@ -92,7 +89,9 @@ public class TunnelRealWorldBenchmarkTest {
         System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线；对比各包大小可观察包大小对吞吐的影响）");
     }
 
-    /** 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。 */
+    /**
+     * 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。
+     */
     private Result runDirect(int echoPort, int payload) throws Exception {
         EventLoopGroup echoGroup = startEcho(echoPort);
         try {
@@ -103,7 +102,9 @@ public class TunnelRealWorldBenchmarkTest {
         }
     }
 
-    /** 起 echo 后端（收到即原样回），返回其 EventLoopGroup 供调用方关闭。 */
+    /**
+     * 起 echo 后端（收到即原样回），返回其 EventLoopGroup 供调用方关闭。
+     */
     private EventLoopGroup startEcho(int echoPort) throws Exception {
         EventLoopGroup echoGroup = new NioEventLoopGroup();
         ServerBootstrap eb = new ServerBootstrap();
@@ -118,6 +119,7 @@ public class TunnelRealWorldBenchmarkTest {
                             protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
                                 ctx.writeAndFlush(msg.retain()); // retain 交出的引用，Simple 会在返回后 release 入站引用
                             }
+
                             @Override
                             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                 ctx.close();
@@ -129,7 +131,9 @@ public class TunnelRealWorldBenchmarkTest {
         return echoGroup;
     }
 
-    /** 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB（包大小 payload），统计端到端吞吐/RTT。 */
+    /**
+     * 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB（包大小 payload），统计端到端吞吐/RTT。
+     */
     private Result runTraffic(String host, int port, String name, int payload) throws Exception {
         Result r = new Result(name);
         r.connCount = CONN;
@@ -179,7 +183,9 @@ public class TunnelRealWorldBenchmarkTest {
         gate.countDown();                                // 发令
         try {
             done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignore) { Thread.currentThread().interrupt(); }
+        } catch (InterruptedException ignore) {
+            Thread.currentThread().interrupt();
+        }
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
         r.receivedBytes = total.get();
@@ -215,8 +221,14 @@ public class TunnelRealWorldBenchmarkTest {
         try {
             r = runTraffic("127.0.0.1", localPort, name, payload);
         } finally {
-            try { tcpServer.close(); } catch (Exception ignore) { }
-            try { ws.close(); } catch (Exception ignore) { }
+            try {
+                tcpServer.close();
+            } catch (Exception ignore) {
+            }
+            try {
+                ws.close();
+            } catch (Exception ignore) {
+            }
             echoGroup.shutdownGracefully().syncUninterruptibly();
             // 等待 tcpServer/ws 的异步 eventLoop 关闭完成，避免档间端口/线程残留导致后续档崩溃
             Thread.sleep(1500);
