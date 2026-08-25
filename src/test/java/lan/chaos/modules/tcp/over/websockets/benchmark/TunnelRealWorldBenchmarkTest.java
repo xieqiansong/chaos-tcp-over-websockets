@@ -6,6 +6,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -20,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import java.net.Socket;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -35,12 +39,15 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TunnelRealWorldBenchmarkTest {
 
-    private static final int PAYLOAD = 1024;     // 每次发送 1KB
-    private static final int ROUNDS = 2000;       // 总打流 2MB
-    private static final long TIMEOUT_MS = 20000; // 单轮回收等待上限
+    private static final int PAYLOAD = 1024;          // 每次发送 1KB
+    private static final int CONN = 4;                // 并发打流连接数
+    private static final int PER_CONN_MB = 16;         // 每连接打流 16MB
+    private static final int ROUNDS_PER_CONN = PER_CONN_MB * 1024; // 每连接发送次数(1KB*16384=16MB)
+    private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限(并发放大)
 
     static class Result {
         final String name;
+        int connCount;
         long receivedBytes;
         double mbPerSec;
         long rttMs;
@@ -54,53 +61,140 @@ public class TunnelRealWorldBenchmarkTest {
                 new CopiedBufferStrategy(),
                 new RetainedDuplicateStrategy(),
                 new DuplicateStrategy());
-        Result[] results = new Result[strategies.size()];
+        Result[] results = new Result[strategies.size() + 1]; // 末位放直连 echo 对照组
         int base = 20000;
         for (int i = 0; i < strategies.size(); i++) {
             String n = i == 0 ? "copied" : i == 1 ? "retained" : "duplicate";
             results[i] = runRound(strategies.get(i), n, base + i * 100);
         }
+        // 直连 echo 对照组：打流客户端直接连 echo 后端，不经过隧道，作为隧道开销基线
+        results[results.length - 1] = runDirect(21001);
 
-        System.out.println("\n==== 真实隧道端到端（echo 后端，2MB 打流） ====");
+        System.out.println("\n==== 真实隧道端到端（echo 后端，" + CONN + " 并发连接，每连接 "
+                + PER_CONN_MB + "MB，合计 " + (CONN * PER_CONN_MB) + "MB） ====");
         for (Result r : results) {
             if (r.error != null) {
                 System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
             } else {
-                System.out.printf("  %-9s %8.2f MB/s  received=%d  rtt=%d ms%n",
-                        r.name, r.mbPerSec, r.receivedBytes, r.rttMs);
+                String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
+                System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
+                        r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
             }
         }
-        System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱）");
+        System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱；rtt 为并发下首末包跨度，仅参考）");
+        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线，用于分离『隧道开销』与『拷贝策略差异』）");
     }
 
-    private Result runRound(BufCopyStrategy strategy, String name, int base) throws Exception {
-        int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
-        Result r = new Result(name);
+    /** 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。 */
+    private Result runDirect(int echoPort) throws Exception {
+        EventLoopGroup echoGroup = startEcho(echoPort);
+        try {
+            Thread.sleep(500); // 等待绑定
+            return runTraffic("127.0.0.1", echoPort, "direct");
+        } finally {
+            echoGroup.shutdownGracefully();
+        }
+    }
 
-        // 1) echo 后端：收到即原样回
+    /** 起 echo 后端（收到即原样回），返回其 EventLoopGroup 供调用方关闭。 */
+    private EventLoopGroup startEcho(int echoPort) throws Exception {
         EventLoopGroup echoGroup = new NioEventLoopGroup();
         ServerBootstrap eb = new ServerBootstrap();
         eb.group(echoGroup).channel(NioServerSocketChannel.class)
+                .childOption(ChannelOption.TCP_NODELAY, true)
+                .childOption(ChannelOption.SO_REUSEADDR, true)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {
-                        ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                             @Override
-                            public void channelRead(ChannelHandlerContext ctx, Object msg) {
-                                ctx.writeAndFlush(msg); // echo 原样回显
+                            protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+                                ctx.writeAndFlush(msg.retain()); // retain 交出的引用，Simple 会在返回后 release 入站引用
+                            }
+                            @Override
+                            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                                ctx.close();
                             }
                         });
                     }
                 });
         eb.bind(echoPort).sync();
+        return echoGroup;
+    }
 
-        // 2) 隧道 server（WS 端，转发到 echo）
+    /** 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB，统计端到端吞吐/RTT。 */
+    private Result runTraffic(String host, int port, String name) throws Exception {
+        Result r = new Result(name);
+        r.connCount = CONN;
+        long expected = (long) CONN * ROUNDS_PER_CONN * PAYLOAD;
+        AtomicLong total = new AtomicLong(0);
+        AtomicLong first = new AtomicLong(0);
+        AtomicLong last = new AtomicLong(0);
+        CountDownLatch gate = new CountDownLatch(1);     // 发令枪：保证多连接同时起步
+        CountDownLatch done = new CountDownLatch(CONN);
+        byte[] payload = new byte[PAYLOAD];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) i;
+        }
+
+        for (int c = 0; c < CONN; c++) {
+            new Thread(() -> {
+                try (Socket s = new Socket(host, port)) {
+                    s.setSoTimeout(5000);
+                    java.io.OutputStream out = s.getOutputStream();
+                    java.io.InputStream in = s.getInputStream();
+                    byte[] rbuf = new byte[8192];
+                    gate.await();                        // 等发令，多连接同时开打
+                    for (int i = 0; i < ROUNDS_PER_CONN; i++) {
+                        out.write(payload);
+                        // 边写边读回包，避免发送端 TCP 缓冲阻塞
+                        int need = PAYLOAD;
+                        while (need > 0) {
+                            int n = in.read(rbuf);
+                            if (n < 0) break;
+                            long t = System.nanoTime();
+                            if (first.get() == 0) first.set(t);
+                            last.set(t);
+                            total.addAndGet(n);
+                            need -= n;
+                        }
+                    }
+                } catch (Exception e) {
+                    r.error = "连接异常: " + e.getClass().getSimpleName();
+                } finally {
+                    done.countDown();
+                }
+            }).start();
+        }
+
+        long start = System.nanoTime();
+        gate.countDown();                                // 发令
+        try {
+            done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignore) { Thread.currentThread().interrupt(); }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        r.receivedBytes = total.get();
+        double mb = r.receivedBytes / 1024.0 / 1024.0;
+        r.mbPerSec = elapsedMs > 0 ? mb * 1000 / elapsedMs : 0;
+        r.rttMs = (last.get() - first.get()) / 1_000_000;
+        if (r.error == null && r.receivedBytes < expected * 0.99) {
+            r.error = "链路异常：仅回收 " + r.receivedBytes + "/" + expected + " 字节";
+        }
+        return r;
+    }
+
+    private Result runRound(BufCopyStrategy strategy, String name, int base) throws Exception {
+        int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
+        EventLoopGroup echoGroup = startEcho(echoPort);
+
+        // 隧道 server（WS 端，转发到 echo）
         WebsocketServer ws = new WebsocketServer(strategy);
         Thread wsThread = new Thread(() -> ws.start(wsPort));
         wsThread.setDaemon(true);
         wsThread.start();
 
-        // 3) 隧道 client 入口（监听到 localPort，连 ws 后转发到 echo）
+        // 隧道 client 入口（监听到 localPort，连 ws 后转发到 echo）
         TcpServer tcpServer = new TcpServer(strategy);
         String wsUrl = "ws://127.0.0.1:" + wsPort + "/forward/127.0.0.1/" + echoPort;
         Thread clientThread = new Thread(() -> tcpServer.start(localPort, wsUrl));
@@ -109,57 +203,9 @@ public class TunnelRealWorldBenchmarkTest {
 
         Thread.sleep(1000); // 等待各端口绑定
 
-        try (Socket s = new Socket("127.0.0.1", localPort)) {
-            s.setSoTimeout(3000);
-            java.io.OutputStream out = s.getOutputStream();
-            java.io.InputStream in = s.getInputStream();
-            byte[] payload = new byte[PAYLOAD];
-            for (int i = 0; i < payload.length; i++) {
-                payload[i] = (byte) i;
-            }
-
-            AtomicLong total = new AtomicLong(0);
-            AtomicLong first = new AtomicLong(0);
-            AtomicLong last = new AtomicLong(0);
-            AtomicBoolean stop = new AtomicBoolean(false);
-            Thread reader = new Thread(() -> {
-                byte[] buf = new byte[8192];
-                try {
-                    while (!stop.get()) {
-                        int n = in.read(buf);
-                        if (n < 0) break;
-                        long t = System.nanoTime();
-                        if (first.get() == 0) first.set(t);
-                        last.set(t);
-                        total.addAndGet(n);
-                    }
-                } catch (Exception ignore) { /* socket 关闭 */ }
-            });
-            reader.setDaemon(true);
-            reader.start();
-
-            long start = System.nanoTime();
-            for (int i = 0; i < ROUNDS; i++) {
-                out.write(payload);
-            }
-            out.flush();
-
-            long deadline = System.currentTimeMillis() + TIMEOUT_MS;
-            while (total.get() < (long) ROUNDS * PAYLOAD && System.currentTimeMillis() < deadline) {
-                Thread.sleep(50);
-            }
-            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-            stop.set(true);
-
-            r.receivedBytes = total.get();
-            double mb = r.receivedBytes / 1024.0 / 1024.0;
-            r.mbPerSec = elapsedMs > 0 ? mb * 1000 / elapsedMs : 0;
-            r.rttMs = (last.get() - first.get()) / 1_000_000;
-            if (r.receivedBytes < (long) ROUNDS * PAYLOAD * 0.99) {
-                r.error = "链路异常：仅回收 " + r.receivedBytes + "/" + ((long) ROUNDS * PAYLOAD) + " 字节";
-            }
-        } catch (Exception e) {
-            r.error = e.getClass().getSimpleName() + ": " + e.getMessage();
+        Result r;
+        try {
+            r = runTraffic("127.0.0.1", localPort, name);
         } finally {
             try { tcpServer.close(); } catch (Exception ignore) { }
             try { ws.close(); } catch (Exception ignore) { }

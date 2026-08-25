@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 仅测试期生效：关闭 DEBUG 刷屏（logback 默认 root=DEBUG 会大量打印 Netty 内部日志，
+     在 Windows 同步写控制台时拖慢 EventLoop 吞吐，干扰端到端基准）。测试用 WARN 级别。 -->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%-5level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="WARN">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
