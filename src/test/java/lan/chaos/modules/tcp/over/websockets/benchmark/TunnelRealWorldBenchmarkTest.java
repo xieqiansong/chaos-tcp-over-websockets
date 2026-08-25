@@ -201,7 +201,7 @@ public class TunnelRealWorldBenchmarkTest {
         int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
         EventLoopGroup echoGroup = startEcho(echoPort);
 
-        // 隧道 server（WS 端，转发到 echo）
+        // 隧道 server（WS 端，转发到 echo；切片只在 TCP 侧，server 端直接转发）
         WebsocketServer ws = new WebsocketServer(strategy, chunk);
         Thread wsThread = new Thread(() -> ws.start(wsPort));
         wsThread.setDaemon(true);

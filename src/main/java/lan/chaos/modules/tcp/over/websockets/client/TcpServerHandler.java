@@ -33,7 +33,7 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         String channelId = ctx.channel().id().asLongText();
         log.debug("tcp server active ....." + channelId);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接, " + channelId);
-        WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel(), bufCopyStrategy, chunkStrategy);
+        WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel(), bufCopyStrategy);
         websocketClientMap.put(channelId, websocketClient);
         pool.execute(websocketClient);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接 结束");

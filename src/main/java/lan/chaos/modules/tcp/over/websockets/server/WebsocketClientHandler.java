@@ -6,7 +6,6 @@ import io.netty.channel.*;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.websocketx.*;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.extern.slf4j.Slf4j;
@@ -17,15 +16,13 @@ import lombok.extern.slf4j.Slf4j;
 public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> {
     private final Channel tcpChannel;
     private final BufCopyStrategy bufCopyStrategy;
-    private final ChunkStrategy chunkStrategy;
     private WebSocketClientHandshaker handshaker;
     private ChannelPromise channelPromise;
 
 
-    public WebsocketClientHandler(Channel channel, BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
+    public WebsocketClientHandler(Channel channel, BufCopyStrategy bufCopyStrategy) {
         this.tcpChannel = channel;
         this.bufCopyStrategy = bufCopyStrategy;
-        this.chunkStrategy = chunkStrategy;
     }
 
     @Override
@@ -84,8 +81,9 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
                 this.tcpChannel.writeAndFlush(frame.content());
             } else if (frame instanceof BinaryWebSocketFrame) {
                 log.debug("BinaryWebSocketFrame msg");
-                // 按 chunk 策略拆帧转发；引用计数由策略内部保证
-                chunkStrategy.transfer(frame.content(), bufCopyStrategy, this.tcpChannel::writeAndFlush);
+                // WS 帧已是发送端切好的小块，直接转发到 TCP（切片只在 TCP 侧做）
+                ByteBuf buff = bufCopyStrategy.wrap(frame.content());
+                this.tcpChannel.writeAndFlush(buff);
             } else if (frame instanceof PingWebSocketFrame) {
                 log.debug("心跳请求");
                 ctx.channel().write(new PongWebSocketFrame(frame.content().retain()));
