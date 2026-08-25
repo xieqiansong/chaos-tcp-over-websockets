@@ -1,5 +1,6 @@
 package lan.chaos.modules.tcp.over.websockets.server;
 
+import cn.hutool.system.SystemUtil;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -9,7 +10,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
-import lan.chaos.modules.tcp.over.websockets.utils.OsInfo;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.Closeable;
@@ -18,8 +18,8 @@ import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 public class WebsocketServer implements Closeable {
-    private final EventLoopGroup bossGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
-    private final EventLoopGroup workGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+    private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+    private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
 
@@ -40,7 +40,7 @@ public class WebsocketServer implements Closeable {
                                     .addLast(new WebsocketServerHandler());
                         }
                     });
-            ServerBootstrap ignored = OsInfo.isWindows ? bootstrap.channel(NioServerSocketChannel.class) : bootstrap.channel(EpollServerSocketChannel.class);
+            ServerBootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioServerSocketChannel.class) : bootstrap.channel(EpollServerSocketChannel.class);
             ChannelFuture channelFuture = bootstrap.bind(port);
             channelFuture.addListener((ChannelFutureListener) future -> log.info("websocket bind port：{}", port));
             Channel channel = channelFuture.channel();

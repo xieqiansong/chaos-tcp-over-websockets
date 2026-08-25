@@ -1,5 +1,6 @@
 package lan.chaos.modules.tcp.over.websockets.client;
 
+import cn.hutool.system.SystemUtil;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -8,7 +9,6 @@ import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import lan.chaos.modules.tcp.over.websockets.utils.OsInfo;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
@@ -17,7 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 public class TcpClient implements Runnable {
     private final String targetHost;
     private final Integer targetPort;
-    private EventLoopGroup workGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+    private EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private Bootstrap bootstrap = new Bootstrap();
     private ChannelFuture channelFuture;
     private Channel websocketChannel;
@@ -31,7 +31,7 @@ public class TcpClient implements Runnable {
             log.error("tcp client 初始化失败,端口未找到, 源端口: " + port);
             return;
         }
-        Bootstrap ignored = OsInfo.isWindows ? bootstrap.channel(NioSocketChannel.class) : bootstrap.channel(EpollSocketChannel.class);
+        Bootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioSocketChannel.class) : bootstrap.channel(EpollSocketChannel.class);
         bootstrap.group(workGroup)
                 .option(ChannelOption.SO_KEEPALIVE, true)
                 .handler(new ChannelInitializer<SocketChannel>() {

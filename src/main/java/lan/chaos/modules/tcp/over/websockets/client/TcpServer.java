@@ -1,5 +1,6 @@
 package lan.chaos.modules.tcp.over.websockets.client;
 
+import cn.hutool.system.SystemUtil;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -7,7 +8,6 @@ import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import lan.chaos.modules.tcp.over.websockets.utils.OsInfo;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.Closeable;
@@ -16,8 +16,8 @@ import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 public class TcpServer implements Closeable {
-    private final EventLoopGroup bossGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
-    private final EventLoopGroup workGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+    private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+    private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
 
@@ -36,7 +36,7 @@ public class TcpServer implements Closeable {
                             ;
                         }
                     });
-            if (OsInfo.isWindows) {
+            if (SystemUtil.getOsInfo().isWindows()) {
                 bootstrap.channel(NioServerSocketChannel.class);
             } else {
                 bootstrap.channel(EpollServerSocketChannel.class);

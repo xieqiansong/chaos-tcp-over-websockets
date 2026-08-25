@@ -1,5 +1,6 @@
 package lan.chaos.modules.tcp.over.websockets.server;
 
+import cn.hutool.system.SystemUtil;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -15,7 +16,6 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
-import lan.chaos.modules.tcp.over.websockets.utils.OsInfo;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
@@ -27,9 +27,9 @@ public class WebsocketClient implements Runnable {
 
     public WebsocketClient(String wsUrl, final Channel tcpChannel) {
         log.debug("websocket client conn start. wsUrl:{}", wsUrl);
-        EventLoopGroup workGroup = OsInfo.isWindows ? new NioEventLoopGroup() : new EpollEventLoopGroup();
+        EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
         Bootstrap bootstrap = new Bootstrap();
-        Bootstrap ignored = OsInfo.isWindows ? bootstrap.channel(NioSocketChannel.class) : bootstrap.channel(EpollSocketChannel.class);
+        Bootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioSocketChannel.class) : bootstrap.channel(EpollSocketChannel.class);
         URI uri;
         try {
             uri = new URI(wsUrl);

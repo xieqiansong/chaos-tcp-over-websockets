@@ -49,7 +49,7 @@ public class BufCopyStrategyBenchmark {
     }
 
     /**
-     * 当前实现：全量拷贝为新的独立 ByteBuf，分配新内存并复制全部字节。
+     * 全量拷贝：分配新内存并复制全部字节，返回独立副本（链路安全）。
      */
     @Benchmark
     public ByteBuf copiedBuffer(Blackhole bh) {
