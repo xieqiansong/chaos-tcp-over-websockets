@@ -1,6 +1,6 @@
 # 测试报告：隧道转发 ByteBuf 拷贝策略（copiedBuffer / duplicate / retainedDuplicate）
 
-> 统一报告：覆盖「环境准备 → 对照测试 → 三实现吞吐实测 → 结论」。
+> 统一报告：覆盖「环境准备 → 对照测试 → 三实现吞吐实测 → 真实端到端场景 → 结论」。
 > 数据采集：2026-08-25，Windows + JDK8（本机运行 JDK8），Maven 编译，单线程 IDEA 点运行。
 
 ## 一、测试环境
@@ -66,15 +66,31 @@ mvn test-compile exec:java -Dexec.mainClass=org.openjdk.jmh.Main \
 
 附本轮原始耗时（ms / 20 万次）：1024 → copied 62 / retained 15 / duplicate 5；65536 → copied 1919 / retained 4 / duplicate 10；1MB → copied 26121 / retained 4 / duplicate 2。
 
-## 五、结论
+## 五、真实隧道端到端场景（方案 B，2026-08-25）
+
+> 目的：把三策略放到**真实异步转发链路**验证，而非内存内 `wrap()` 微基准。拓扑：echo 后端(Netty TCP，收到即回) + 隧道 server(`WebsocketServer`) + 隧道 client 入口(`TcpServer`) + 打流客户端(普通 Socket)，2MB 循环打流（2000 × 1KB），统计端到端吞吐与往返延迟。场景实现见 [TunnelRealWorldBenchmarkTest.java](file:///d:/project/chaos/chaos-tcp-over-websockets/src/test/java/lan/chaos/modules/tcp/over/websockets/benchmark/TunnelRealWorldBenchmarkTest.java)，IDEA 点一下跑完整三轮。
+> 注：本测试直接 `new XxxStrategy()` 注入两段转发 handler，**绕过 `BufCopyConfiguration` 对 duplicate 的回退**，使 duplicate 真跑，验证其异步链路不安全。
+
+| 策略 | 端到端吞吐 | 回收字节 | RTT | 结果 |
+|---|---|---|---|---|
+| copied（全量拷贝） | 3.80 MB/s | 2048000 / 2048000 | 153 ms | 正常 |
+| retained（零拷贝 v2） | 6.49 MB/s | 2048000 / 2048000 | 118 ms | 正常 |
+| duplicate（零拷贝 v1，不安全） | — | 0 / 2048000 | — | **CRASH** |
+
+- duplicate 轮日志实锤崩溃：`io.netty.util.IllegalReferenceCountException: refCnt: 0, decrement: 1`——`duplicate()` 派生 buf `release()` 把共享引用计数减到 0，异步写时源 buf 已释放，后续写操作直接抛异常、连接中断，回包 0 字节。
+- retained 较 copied 端到端快 **~1.7×**（6.49 vs 3.80 MB/s），RTT 更低（118 vs 153 ms），零拷贝在真实 IO 路径收益成立。
+- 该测试为单连接、小包（1KB）场景下的值，量级仅供参考；多连接 / 大包下的差距会随微基准结论进一步扩大。
+
+## 六、结论
 
 1. **零拷贝收益真实且巨大（尤其是大包）**：1MB 下 `retained`/`duplicate` 较 `copied` 快约 **6500~13000 倍**（50000/100000 vs 7.66 ops/ms）；64KB 下快约 **480~190 倍**。转发路径上「每次全量 copy 一整条 TCP 流」是显著瓶颈，改为零拷贝策略收益立竿见影。
 2. **`copied` 开销随尺寸线性飙升**：1KB→1MB 吞吐从 3225 跌到 7.66（约 **420 倍**降幅），全量拷贝的成本正比于字节数；零拷贝策略在三种尺寸下吞吐基本恒定（~1~10 万 ops/ms），与尺寸解耦。
 3. **默认选 `retainedDuplicate` 而非 `duplicate`**：`duplicate` 在 1KB/1MB 绝对最快，但**共享引用计数、链路不安全**（写端 release 会误伤源 buf）；`retained` 同样零拷贝、吞吐同量级（64KB/1MB 下甚至与 duplicate 持平），且持有独立引用、写端 release 安全。安全与性能兼得，故为默认策略。
 4. **`copied` 作为安全回退保留**：仅在"下游必须持有独立副本、且不可承受引用计数约束"的极端场景使用；常规隧道转发一律走 `retained`。
 
-## 六、下一步（可选增强）
+## 七、下一步（可选增强）
 
-- **接真实转发流量验证**：当前基准为内存内 `wrap()` 微基准，未上真实隧道转发（server↔client 端到端）。可在 `TcpServerHandler`/`WebsocketServerHandler` 等挂上可切换策略，用端到端吞吐/延迟验证零拷贝在真实 IO 路径的收益。
-- **策略可配置化**：用 `@Configuration` + `@ConditionalOnProperty` 把默认策略交给 `application.yml` 选择，免去改代码切换三实现。
-- **JMH 正式数据补齐**：对照测试仅供定性，建议补一轮 JMH fork 基准（多尺寸、多 forks）作为正式性能基线入库。
+- ~~**接真实转发流量验证**：当前基准为内存内 `wrap()` 微基准，未上真实隧道转发（server↔client 端到端）。可在 `TcpServerHandler`/`WebsocketServerHandler` 等挂上可切换策略，用端到端吞吐/延迟验证零拷贝在真实 IO 路径的收益。~~ **（已完成：见第五节真实端到端场景，retained 较 copied 端到端快 ~1.7×，duplicate 真跑崩溃）**
+- **策略可配置化**：用 `@Configuration` + `@ConditionalOnProperty` 把默认策略交给 `application.yml` 选择，免去改代码切换三实现（当前 `BufCopyConfiguration` 已支持 `buf.copy.strategy`，但 duplicate 被强制回退 retained 以防误用）。
+- **JMH 正式数据补齐**：对照测试与端到端测试仅供定性，建议补一轮 JMH fork 基准（多尺寸、多连接、多 forks）作为正式性能基线入库。
+- **多连接 / 大包端到端扩压**：当前端到端为单连接 1KB 小包，可加并发连接数与大包尺寸，观察零拷贝优势在重负载下的放大倍数。
