@@ -64,7 +64,7 @@ public class TunnelRealWorldBenchmarkTest {
                 new RetainedDuplicateStrategy(),
                 new DuplicateStrategy());
 
-        // 拆帧策略：按 1KB 拆帧转发（生产默认；不拆帧可用 new NoSliceChunkStrategy() 对照）
+        // 拆帧策略：按 1KB 拆帧（配合固定 1KB 收包，已验证 1KB/32KB/1MB 均稳定）
         ChunkStrategy chunk = new FixedSliceChunkStrategy(1024);
 
         int base = 20000;
@@ -222,7 +222,9 @@ public class TunnelRealWorldBenchmarkTest {
         } finally {
             try { tcpServer.close(); } catch (Exception ignore) { }
             try { ws.close(); } catch (Exception ignore) { }
-            echoGroup.shutdownGracefully();
+            echoGroup.shutdownGracefully().syncUninterruptibly();
+            // 等待 tcpServer/ws 的异步 eventLoop 关闭完成，避免档间端口/线程残留导致后续档崩溃
+            Thread.sleep(1500);
         }
         return r;
     }
