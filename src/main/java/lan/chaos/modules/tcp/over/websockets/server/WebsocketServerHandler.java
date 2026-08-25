@@ -10,7 +10,6 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.util.CharsetUtil;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.client.TcpClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,12 +27,10 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
     private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, TcpClient> tcpClientMap = new ConcurrentHashMap<>();
     private final BufCopyStrategy bufCopyStrategy;
-    private final ChunkStrategy chunkStrategy;
     private WebSocketServerHandshaker handshaker;
 
-    public WebsocketServerHandler(BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
+    public WebsocketServerHandler(BufCopyStrategy bufCopyStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
-        this.chunkStrategy = chunkStrategy;
     }
 
     @Override
@@ -116,7 +113,7 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             Integer targetPort = Integer.parseInt(paths[3]);
 
             log.info("开始建立 tcp 连接开始 targetHost: {} targetPort {}", targetHost, targetPort);
-            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy, chunkStrategy);
+            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy);
             tcpClientMap.put(ctx.channel().id().asLongText(), tcpClient);
             pool.execute(tcpClient);
             log.info("开始建立 tcp 连接 结束");

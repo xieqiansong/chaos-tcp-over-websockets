@@ -6,7 +6,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.ReferenceCountUtil;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -21,12 +20,10 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
     private final Map<String, WebsocketClient> websocketClientMap = new ConcurrentHashMap<>();
     private final String wsUrl;
     private final BufCopyStrategy bufCopyStrategy;
-    private final ChunkStrategy chunkStrategy;
 
-    public TcpServerHandler(String wsUrl, BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
+    public TcpServerHandler(String wsUrl, BufCopyStrategy bufCopyStrategy) {
         this.wsUrl = wsUrl;
         this.bufCopyStrategy = bufCopyStrategy;
-        this.chunkStrategy = chunkStrategy;
     }
 
     @Override
@@ -50,8 +47,9 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         WebsocketClient websocketClient = websocketClientMap.get(channelId);
         if (websocketClient != null) {
             log.debug("发送给 websocket client");
-            // 按 chunk 策略拆帧转发（可配置：整块 / 固定块）；引用计数由策略内部保证
-            chunkStrategy.transfer(buf, bufCopyStrategy, websocketClient::writeAndFlush);
+            // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
+            ByteBuf buff = bufCopyStrategy.wrap(buf);
+            websocketClient.writeAndFlush(buff);
         }
         // 入站 buf 处理完毕归还引用：copied 独立副本不受影响；retained 由 wrapped 持有引用，写完成自动释放
         ReferenceCountUtil.release(buf);

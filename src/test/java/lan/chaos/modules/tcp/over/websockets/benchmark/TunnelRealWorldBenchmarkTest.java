@@ -15,8 +15,6 @@ import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.CopiedBufferStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.DuplicateStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.RetainedDuplicateStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.FixedSliceChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.client.TcpServer;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
@@ -64,19 +62,16 @@ public class TunnelRealWorldBenchmarkTest {
                 new RetainedDuplicateStrategy(),
                 new DuplicateStrategy());
 
-        // 拆帧策略：按 1KB 拆帧（配合固定 1KB 收包，已验证 1KB/32KB/1MB 均稳定）
-        ChunkStrategy chunk = new FixedSliceChunkStrategy(1024);
-
         int base = 20000;
         int directBase = 21000;
         for (int pi = 0; pi < PAYLOADS.length; pi++) {
             int payload = PAYLOADS[pi];
-            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024) + "KB)，chunk=" + chunk.name() + " ========");
+            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024) + "KB) ========");
 
             Result[] results = new Result[strategies.size()];
             for (int i = 0; i < strategies.size(); i++) {
                 String n = i == 0 ? "copied" : i == 1 ? "retained" : "duplicate";
-                results[i] = runRound(strategies.get(i), n, base + i * 100, payload, chunk);
+                results[i] = runRound(strategies.get(i), n, base + i * 100, payload);
             }
             // 直连 echo 对照组：打流客户端直接连 echo 后端，不经过隧道，作为隧道开销基线
             results[results.length - 1] = runDirect(directBase + pi * 10, payload);
@@ -197,18 +192,18 @@ public class TunnelRealWorldBenchmarkTest {
         return r;
     }
 
-    private Result runRound(BufCopyStrategy strategy, String name, int base, int payload, ChunkStrategy chunk) throws Exception {
+    private Result runRound(BufCopyStrategy strategy, String name, int base, int payload) throws Exception {
         int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
         EventLoopGroup echoGroup = startEcho(echoPort);
 
-        // 隧道 server（WS 端，转发到 echo；切片只在 TCP 侧，server 端直接转发）
-        WebsocketServer ws = new WebsocketServer(strategy, chunk);
+        // 隧道 server（WS 端，转发到 echo）
+        WebsocketServer ws = new WebsocketServer(strategy);
         Thread wsThread = new Thread(() -> ws.start(wsPort));
         wsThread.setDaemon(true);
         wsThread.start();
 
         // 隧道 client 入口（监听到 localPort，连 ws 后转发到 echo）
-        TcpServer tcpServer = new TcpServer(strategy, chunk);
+        TcpServer tcpServer = new TcpServer(strategy);
         String wsUrl = "ws://127.0.0.1:" + wsPort + "/forward/127.0.0.1/" + echoPort;
         Thread clientThread = new Thread(() -> tcpServer.start(localPort, wsUrl));
         clientThread.setDaemon(true);

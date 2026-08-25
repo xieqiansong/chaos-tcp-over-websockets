@@ -11,10 +11,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
-import lan.chaos.modules.tcp.over.websockets.chunk.NoSliceChunkStrategy;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -28,20 +25,12 @@ import java.util.concurrent.locks.ReentrantLock;
 @Profile("server")
 public class WebsocketServer implements Closeable {
     private final BufCopyStrategy bufCopyStrategy;
-    private final ChunkStrategy chunkStrategy;
     private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
-    /** 供测试/手动场景使用：不拆帧，保持原始整块转发行为。 */
     public WebsocketServer(BufCopyStrategy bufCopyStrategy) {
-        this(bufCopyStrategy, new NoSliceChunkStrategy());
-    }
-
-    @Autowired
-    public WebsocketServer(BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
-        this.chunkStrategy = chunkStrategy;
     }
 
 
@@ -59,7 +48,7 @@ public class WebsocketServer implements Closeable {
                                     .addLast(new HttpServerCodec())
 //                                    .addLast(new LoggingHandler(LogLevel.INFO))
                                     .addLast(new HttpObjectAggregator(65536))
-                                    .addLast(new WebsocketServerHandler(bufCopyStrategy, chunkStrategy));
+                                    .addLast(new WebsocketServerHandler(bufCopyStrategy));
                         }
                     });
             ServerBootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioServerSocketChannel.class) : bootstrap.channel(EpollServerSocketChannel.class);
