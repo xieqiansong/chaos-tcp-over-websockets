@@ -29,11 +29,15 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         log.debug("TCP client 收到服务器响应..." + ctx.channel().id().asLongText());
         ByteBuf buf = (ByteBuf) msg;
-        log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));
+        if (log.isDebugEnabled()) {
+            log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));
+        }
         if (websocketChannel != null) {
             // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
             ByteBuf tcpData = bufCopyStrategy.wrap(buf);
-            log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(tcpData));
+            if (log.isDebugEnabled()) {
+                log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(tcpData));
+            }
             BinaryWebSocketFrame binaryWebSocketFrame = new BinaryWebSocketFrame(tcpData);
             websocketChannel.writeAndFlush(binaryWebSocketFrame);
         }
