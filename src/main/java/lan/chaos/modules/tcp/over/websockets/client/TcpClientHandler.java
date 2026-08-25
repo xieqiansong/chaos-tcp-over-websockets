@@ -6,6 +6,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import io.netty.util.ReferenceCountUtil;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +40,8 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
                 websocketChannel.writeAndFlush(new BinaryWebSocketFrame(wrapped));
             });
         }
+        // 入站 buf 归还引用；wrapped 独立持有或共享引用，写完成自动释放
+        ReferenceCountUtil.release(buf);
     }
 
     @Override

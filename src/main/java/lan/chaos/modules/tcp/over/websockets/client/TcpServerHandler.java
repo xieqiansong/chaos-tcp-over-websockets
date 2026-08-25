@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.util.ReferenceCountUtil;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketClient;
@@ -52,6 +53,8 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
             // 按 chunk 策略拆帧转发（可配置：整块 / 固定块）；引用计数由策略内部保证
             chunkStrategy.transfer(buf, bufCopyStrategy, websocketClient::writeAndFlush);
         }
+        // 入站 buf 处理完毕归还引用：copied 独立副本不受影响；retained 由 wrapped 持有引用，写完成自动释放
+        ReferenceCountUtil.release(buf);
     }
 
     @Override
