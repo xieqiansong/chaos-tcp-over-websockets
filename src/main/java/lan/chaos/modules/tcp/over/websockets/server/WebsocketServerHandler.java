@@ -91,11 +91,8 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             String channelId = ctx.channel().id().asLongText();
             TcpClient tcpClient = tcpClientMap.get(channelId);
             if (tcpClient != null) {
-                // 按 chunk 策略拆帧转发；wrap 持有引用撑过异步写出
-                chunkStrategy.slice(((BinaryWebSocketFrame) webSocketFrame).content(), slice -> {
-                    ByteBuf buff = bufCopyStrategy.wrap(slice);
-                    tcpClient.writeAndFlush(buff);
-                });
+                // 按 chunk 策略拆帧转发；引用计数由策略内部保证
+                chunkStrategy.transfer(((BinaryWebSocketFrame) webSocketFrame).content(), bufCopyStrategy, tcpClient::writeAndFlush);
             }
         }
     }

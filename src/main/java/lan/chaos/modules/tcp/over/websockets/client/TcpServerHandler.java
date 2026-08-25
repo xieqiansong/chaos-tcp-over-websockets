@@ -49,11 +49,8 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         WebsocketClient websocketClient = websocketClientMap.get(channelId);
         if (websocketClient != null) {
             log.debug("发送给 websocket client");
-            // 按 chunk 策略拆帧转发（可配置：整块 / 固定块）；wrap 持有引用撑过异步写出
-            chunkStrategy.slice(buf, slice -> {
-                ByteBuf buff = bufCopyStrategy.wrap(slice);
-                websocketClient.writeAndFlush(buff);
-            });
+            // 按 chunk 策略拆帧转发（可配置：整块 / 固定块）；引用计数由策略内部保证
+            chunkStrategy.transfer(buf, bufCopyStrategy, websocketClient::writeAndFlush);
         }
     }
 

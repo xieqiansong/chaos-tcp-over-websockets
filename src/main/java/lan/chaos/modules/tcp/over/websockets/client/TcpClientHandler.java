@@ -33,12 +33,10 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
         ByteBuf buf = (ByteBuf) msg;
         log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));
         if (websocketChannel != null) {
-            // 按 chunk 策略拆帧转发；wrap 持有引用撑过异步写出
-            chunkStrategy.slice(buf, slice -> {
-                ByteBuf tcpData = bufCopyStrategy.wrap(slice);
-                log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(tcpData));
-                BinaryWebSocketFrame binaryWebSocketFrame = new BinaryWebSocketFrame(tcpData);
-                websocketChannel.writeAndFlush(binaryWebSocketFrame);
+            // 按 chunk 策略拆帧转发；引用计数由策略内部保证
+            chunkStrategy.transfer(buf, bufCopyStrategy, wrapped -> {
+                log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(wrapped));
+                websocketChannel.writeAndFlush(new BinaryWebSocketFrame(wrapped));
             });
         }
     }

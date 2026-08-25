@@ -84,11 +84,8 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
                 this.tcpChannel.writeAndFlush(frame.content());
             } else if (frame instanceof BinaryWebSocketFrame) {
                 log.debug("BinaryWebSocketFrame msg");
-                // 按 chunk 策略拆帧转发；wrap 持有引用撑过异步写出
-                chunkStrategy.slice(frame.content(), slice -> {
-                    ByteBuf buff = bufCopyStrategy.wrap(slice);
-                    this.tcpChannel.writeAndFlush(buff);
-                });
+                // 按 chunk 策略拆帧转发；引用计数由策略内部保证
+                chunkStrategy.transfer(frame.content(), bufCopyStrategy, this.tcpChannel::writeAndFlush);
             } else if (frame instanceof PingWebSocketFrame) {
                 log.debug("心跳请求");
                 ctx.channel().write(new PongWebSocketFrame(frame.content().retain()));
