@@ -16,6 +16,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
@@ -24,8 +25,10 @@ import java.net.URISyntaxException;
 @Slf4j
 public class WebsocketClient implements Runnable {
     private final Channel channel;
+    private final BufCopyStrategy bufCopyStrategy;
 
-    public WebsocketClient(String wsUrl, final Channel tcpChannel) {
+    public WebsocketClient(String wsUrl, final Channel tcpChannel, BufCopyStrategy bufCopyStrategy) {
+        this.bufCopyStrategy = bufCopyStrategy;
         log.debug("websocket client conn start. wsUrl:{}", wsUrl);
         EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
         Bootstrap bootstrap = new Bootstrap();
@@ -37,7 +40,7 @@ public class WebsocketClient implements Runnable {
             throw new RuntimeException(e);
         }
         final WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders());
-        final WebsocketClientHandler wch = new WebsocketClientHandler(tcpChannel);
+        final WebsocketClientHandler wch = new WebsocketClientHandler(tcpChannel, bufCopyStrategy);
         bootstrap.group(workGroup)
                 .option(ChannelOption.SO_KEEPALIVE, true)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 3000)

@@ -10,17 +10,28 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.io.Closeable;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
+@Component
+@Profile("server")
 public class WebsocketServer implements Closeable {
+    private final BufCopyStrategy bufCopyStrategy;
     private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
+
+    public WebsocketServer(BufCopyStrategy bufCopyStrategy) {
+        this.bufCopyStrategy = bufCopyStrategy;
+    }
 
 
     public void start(int port) {
@@ -37,7 +48,7 @@ public class WebsocketServer implements Closeable {
                                     .addLast(new HttpServerCodec())
 //                                    .addLast(new LoggingHandler(LogLevel.INFO))
                                     .addLast(new HttpObjectAggregator(65536))
-                                    .addLast(new WebsocketServerHandler());
+                                    .addLast(new WebsocketServerHandler(bufCopyStrategy));
                         }
                     });
             ServerBootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioServerSocketChannel.class) : bootstrap.channel(EpollServerSocketChannel.class);
@@ -55,6 +66,7 @@ public class WebsocketServer implements Closeable {
 
 
     @Override
+    @PreDestroy
     public void close() {
         lock.lock();
         try {

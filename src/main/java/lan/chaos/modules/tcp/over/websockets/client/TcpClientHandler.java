@@ -6,14 +6,17 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class TcpClientHandler extends ChannelInboundHandlerAdapter {
     private final Channel websocketChannel;
+    private final BufCopyStrategy bufCopyStrategy;
 
-    public TcpClientHandler(Channel channel) {
+    public TcpClientHandler(Channel channel, BufCopyStrategy bufCopyStrategy) {
         this.websocketChannel = channel;
+        this.bufCopyStrategy = bufCopyStrategy;
     }
 
     @Override
@@ -28,7 +31,7 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
         log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));
         if (websocketChannel != null) {
             // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
-            ByteBuf tcpData = buf.retainedDuplicate();
+            ByteBuf tcpData = bufCopyStrategy.wrap(buf);
             log.debug("tcp client 开始发送数据 " + ByteBufUtil.hexDump(tcpData));
             BinaryWebSocketFrame binaryWebSocketFrame = new BinaryWebSocketFrame(tcpData);
             websocketChannel.writeAndFlush(binaryWebSocketFrame);

@@ -9,6 +9,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.util.CharsetUtil;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.client.TcpClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,7 +26,12 @@ import static io.netty.handler.codec.http.HttpUtil.setContentLength;
 public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> {
     private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, TcpClient> tcpClientMap = new ConcurrentHashMap<>();
+    private final BufCopyStrategy bufCopyStrategy;
     private WebSocketServerHandshaker handshaker;
+
+    public WebsocketServerHandler(BufCopyStrategy bufCopyStrategy) {
+        this.bufCopyStrategy = bufCopyStrategy;
+    }
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) {
@@ -83,7 +89,7 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             TcpClient tcpClient = tcpClientMap.get(channelId);
             if (tcpClient != null) {
                 // 零拷贝共享帧内容底层内存，引用计数 +1，写完成后由 Netty 自动 release
-                ByteBuf buff = ((BinaryWebSocketFrame) webSocketFrame).content().retainedDuplicate();
+                ByteBuf buff = bufCopyStrategy.wrap(((BinaryWebSocketFrame) webSocketFrame).content());
                 tcpClient.writeAndFlush(buff);
             }
         }
@@ -107,7 +113,7 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             Integer targetPort = Integer.parseInt(paths[3]);
 
             log.info("开始建立 tcp 连接开始 targetHost: {} targetPort {}", targetHost, targetPort);
-            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel());
+            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy);
             tcpClientMap.put(ctx.channel().id().asLongText(), tcpClient);
             pool.execute(tcpClient);
             log.info("开始建立 tcp 连接 结束");

@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -17,9 +18,11 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
     private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, WebsocketClient> websocketClientMap = new ConcurrentHashMap<>();
     private final String wsUrl;
+    private final BufCopyStrategy bufCopyStrategy;
 
-    public TcpServerHandler(String wsUrl) {
+    public TcpServerHandler(String wsUrl, BufCopyStrategy bufCopyStrategy) {
         this.wsUrl = wsUrl;
+        this.bufCopyStrategy = bufCopyStrategy;
     }
 
     @Override
@@ -27,7 +30,7 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         String channelId = ctx.channel().id().asLongText();
         log.debug("tcp server active ....." + channelId);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接, " + channelId);
-        WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel());
+        WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel(), bufCopyStrategy);
         websocketClientMap.put(channelId, websocketClient);
         pool.execute(websocketClient);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接 结束");
@@ -44,7 +47,7 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         if (websocketClient != null) {
             log.debug("发送给 websocket client");
             // 零拷贝共享底层内存，引用计数 +1，写完成后由 Netty 自动 release
-            ByteBuf buff = buf.retainedDuplicate();
+            ByteBuf buff = bufCopyStrategy.wrap(buf);
             websocketClient.writeAndFlush(buff);
         }
     }

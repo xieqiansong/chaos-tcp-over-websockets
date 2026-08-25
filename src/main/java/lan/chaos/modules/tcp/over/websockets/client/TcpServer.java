@@ -8,17 +8,28 @@ import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.io.Closeable;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
+@Component
+@Profile("client")
 public class TcpServer implements Closeable {
+    private final BufCopyStrategy bufCopyStrategy;
     private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
+
+    public TcpServer(BufCopyStrategy bufCopyStrategy) {
+        this.bufCopyStrategy = bufCopyStrategy;
+    }
 
 
     public void start(int port, String wsUrl) {
@@ -32,7 +43,7 @@ public class TcpServer implements Closeable {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ch.pipeline()
-                                    .addLast(new TcpServerHandler(wsUrl))
+                                    .addLast(new TcpServerHandler(wsUrl, bufCopyStrategy))
                             ;
                         }
                     });
@@ -55,6 +66,7 @@ public class TcpServer implements Closeable {
     }
 
     @Override
+    @PreDestroy
     public void close() {
         lock.lock();
         try {

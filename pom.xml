@@ -64,6 +64,12 @@
             <version>${jmh.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- 提供 JUnit 5，支持 IDEA 内直接运行 @Test（含拷贝策略对照测试） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
