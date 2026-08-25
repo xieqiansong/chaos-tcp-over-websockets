@@ -10,6 +10,7 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
@@ -23,9 +24,11 @@ public class TcpClient implements Runnable {
     private ChannelFuture channelFuture;
     private Channel websocketChannel;
     private final BufCopyStrategy bufCopyStrategy;
+    private final ChunkStrategy chunkStrategy;
 
-    public TcpClient(String host, Integer port, final Channel channel, BufCopyStrategy bufCopyStrategy) {
+    public TcpClient(String host, Integer port, final Channel channel, BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        this.chunkStrategy = chunkStrategy;
         log.info("Tcp Client connect start......");
         this.targetHost = host;
         this.targetPort = port;
@@ -41,7 +44,7 @@ public class TcpClient implements Runnable {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         log.debug("初始化 channel .... ");
-                        ch.pipeline().addLast(new TcpClientHandler(channel, bufCopyStrategy));
+                        ch.pipeline().addLast(new TcpClientHandler(channel, bufCopyStrategy, chunkStrategy));
                     }
                 });
     }

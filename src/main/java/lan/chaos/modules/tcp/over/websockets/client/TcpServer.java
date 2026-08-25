@@ -9,7 +9,10 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.NoSliceChunkStrategy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -23,12 +26,20 @@ import java.util.concurrent.locks.ReentrantLock;
 @Profile("client")
 public class TcpServer implements Closeable {
     private final BufCopyStrategy bufCopyStrategy;
+    private final ChunkStrategy chunkStrategy;
     private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
+    /** 供测试/手动场景使用：不拆帧，保持原始整块转发行为。 */
     public TcpServer(BufCopyStrategy bufCopyStrategy) {
+        this(bufCopyStrategy, new NoSliceChunkStrategy());
+    }
+
+    @Autowired
+    public TcpServer(BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        this.chunkStrategy = chunkStrategy;
     }
 
 
@@ -43,7 +54,7 @@ public class TcpServer implements Closeable {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ch.pipeline()
-                                    .addLast(new TcpServerHandler(wsUrl, bufCopyStrategy))
+                                    .addLast(new TcpServerHandler(wsUrl, bufCopyStrategy, chunkStrategy))
                             ;
                         }
                     });

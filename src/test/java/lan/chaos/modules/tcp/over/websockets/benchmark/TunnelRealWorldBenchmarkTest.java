@@ -15,6 +15,8 @@ import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.CopiedBufferStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.DuplicateStrategy;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.RetainedDuplicateStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.FixedSliceChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.client.TcpServer;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
@@ -39,10 +41,10 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TunnelRealWorldBenchmarkTest {
 
-    private static final int PAYLOAD = 1024;          // 每次发送 1KB
-    private static final int CONN = 4;                // 并发打流连接数
+    // 打流包大小维度：1KB(小包) / 32KB / 1MB / 16MB(超大)。每尺寸每连接仍打 PER_CONN_MB 总量。
+    private static final int[] PAYLOADS = {1024, 32 * 1024, 1024 * 1024, 16 * 1024 * 1024};
+    private static final int CONN = 1;                // 并发打流连接数（临时降为1验证并发是否为 retained 崩溃根因）
     private static final int PER_CONN_MB = 16;         // 每连接打流 16MB
-    private static final int ROUNDS_PER_CONN = PER_CONN_MB * 1024; // 每连接发送次数(1KB*16384=16MB)
     private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限(并发放大)
 
     static class Result {
@@ -61,36 +63,46 @@ public class TunnelRealWorldBenchmarkTest {
                 new CopiedBufferStrategy(),
                 new RetainedDuplicateStrategy(),
                 new DuplicateStrategy());
-        Result[] results = new Result[strategies.size() + 1]; // 末位放直连 echo 对照组
-        int base = 20000;
-        for (int i = 0; i < strategies.size(); i++) {
-            String n = i == 0 ? "copied" : i == 1 ? "retained" : "duplicate";
-            results[i] = runRound(strategies.get(i), n, base + i * 100);
-        }
-        // 直连 echo 对照组：打流客户端直接连 echo 后端，不经过隧道，作为隧道开销基线
-        results[results.length - 1] = runDirect(21001);
 
-        System.out.println("\n==== 真实隧道端到端（echo 后端，" + CONN + " 并发连接，每连接 "
-                + PER_CONN_MB + "MB，合计 " + (CONN * PER_CONN_MB) + "MB） ====");
-        for (Result r : results) {
-            if (r.error != null) {
-                System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
-            } else {
-                String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
-                System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
-                        r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
+        // 拆帧策略：按 1KB 拆帧转发（生产默认；不拆帧可用 new NoSliceChunkStrategy() 对照）
+        ChunkStrategy chunk = new FixedSliceChunkStrategy(1024);
+
+        int base = 20000;
+        int directBase = 21000;
+        for (int pi = 0; pi < PAYLOADS.length; pi++) {
+            int payload = PAYLOADS[pi];
+            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024) + "KB)，chunk=" + chunk.name() + " ========");
+
+            Result[] results = new Result[strategies.size()];
+            for (int i = 0; i < strategies.size(); i++) {
+                String n = i == 0 ? "copied" : i == 1 ? "retained" : "duplicate";
+                results[i] = runRound(strategies.get(i), n, base + i * 100, payload, chunk);
+            }
+            // 直连 echo 对照组：打流客户端直接连 echo 后端，不经过隧道，作为隧道开销基线
+            results[results.length - 1] = runDirect(directBase + pi * 10, payload);
+
+            System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
+                    + (CONN * PER_CONN_MB) + "MB --");
+            for (Result r : results) {
+                if (r.error != null) {
+                    System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
+                } else {
+                    String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
+                    System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
+                            r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
+                }
             }
         }
         System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱；rtt 为并发下首末包跨度，仅参考）");
-        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线，用于分离『隧道开销』与『拷贝策略差异』）");
+        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线；对比各包大小可观察包大小对吞吐的影响）");
     }
 
     /** 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。 */
-    private Result runDirect(int echoPort) throws Exception {
+    private Result runDirect(int echoPort, int payload) throws Exception {
         EventLoopGroup echoGroup = startEcho(echoPort);
         try {
             Thread.sleep(500); // 等待绑定
-            return runTraffic("127.0.0.1", echoPort, "direct");
+            return runTraffic("127.0.0.1", echoPort, "direct", payload);
         } finally {
             echoGroup.shutdownGracefully();
         }
@@ -122,19 +134,20 @@ public class TunnelRealWorldBenchmarkTest {
         return echoGroup;
     }
 
-    /** 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB，统计端到端吞吐/RTT。 */
-    private Result runTraffic(String host, int port, String name) throws Exception {
+    /** 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB（包大小 payload），统计端到端吞吐/RTT。 */
+    private Result runTraffic(String host, int port, String name, int payload) throws Exception {
         Result r = new Result(name);
         r.connCount = CONN;
-        long expected = (long) CONN * ROUNDS_PER_CONN * PAYLOAD;
+        int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload; // 保持每连接总量 16MB
+        long expected = (long) CONN * roundsPerConn * payload;
         AtomicLong total = new AtomicLong(0);
         AtomicLong first = new AtomicLong(0);
         AtomicLong last = new AtomicLong(0);
         CountDownLatch gate = new CountDownLatch(1);     // 发令枪：保证多连接同时起步
         CountDownLatch done = new CountDownLatch(CONN);
-        byte[] payload = new byte[PAYLOAD];
-        for (int i = 0; i < payload.length; i++) {
-            payload[i] = (byte) i;
+        byte[] pl = new byte[payload];
+        for (int i = 0; i < pl.length; i++) {
+            pl[i] = (byte) i;
         }
 
         for (int c = 0; c < CONN; c++) {
@@ -145,10 +158,10 @@ public class TunnelRealWorldBenchmarkTest {
                     java.io.InputStream in = s.getInputStream();
                     byte[] rbuf = new byte[8192];
                     gate.await();                        // 等发令，多连接同时开打
-                    for (int i = 0; i < ROUNDS_PER_CONN; i++) {
-                        out.write(payload);
+                    for (int i = 0; i < roundsPerConn; i++) {
+                        out.write(pl);
                         // 边写边读回包，避免发送端 TCP 缓冲阻塞
-                        int need = PAYLOAD;
+                        int need = payload;
                         while (need > 0) {
                             int n = in.read(rbuf);
                             if (n < 0) break;
@@ -184,18 +197,18 @@ public class TunnelRealWorldBenchmarkTest {
         return r;
     }
 
-    private Result runRound(BufCopyStrategy strategy, String name, int base) throws Exception {
+    private Result runRound(BufCopyStrategy strategy, String name, int base, int payload, ChunkStrategy chunk) throws Exception {
         int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
         EventLoopGroup echoGroup = startEcho(echoPort);
 
         // 隧道 server（WS 端，转发到 echo）
-        WebsocketServer ws = new WebsocketServer(strategy);
+        WebsocketServer ws = new WebsocketServer(strategy, chunk);
         Thread wsThread = new Thread(() -> ws.start(wsPort));
         wsThread.setDaemon(true);
         wsThread.start();
 
         // 隧道 client 入口（监听到 localPort，连 ws 后转发到 echo）
-        TcpServer tcpServer = new TcpServer(strategy);
+        TcpServer tcpServer = new TcpServer(strategy, chunk);
         String wsUrl = "ws://127.0.0.1:" + wsPort + "/forward/127.0.0.1/" + echoPort;
         Thread clientThread = new Thread(() -> tcpServer.start(localPort, wsUrl));
         clientThread.setDaemon(true);
@@ -205,7 +218,7 @@ public class TunnelRealWorldBenchmarkTest {
 
         Result r;
         try {
-            r = runTraffic("127.0.0.1", localPort, name);
+            r = runTraffic("127.0.0.1", localPort, name, payload);
         } finally {
             try { tcpServer.close(); } catch (Exception ignore) { }
             try { ws.close(); } catch (Exception ignore) { }

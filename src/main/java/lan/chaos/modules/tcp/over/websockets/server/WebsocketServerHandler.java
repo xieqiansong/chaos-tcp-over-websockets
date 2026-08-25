@@ -10,6 +10,7 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.util.CharsetUtil;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lan.chaos.modules.tcp.over.websockets.client.TcpClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -27,10 +28,12 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
     private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, TcpClient> tcpClientMap = new ConcurrentHashMap<>();
     private final BufCopyStrategy bufCopyStrategy;
+    private final ChunkStrategy chunkStrategy;
     private WebSocketServerHandshaker handshaker;
 
-    public WebsocketServerHandler(BufCopyStrategy bufCopyStrategy) {
+    public WebsocketServerHandler(BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        this.chunkStrategy = chunkStrategy;
     }
 
     @Override
@@ -88,9 +91,11 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             String channelId = ctx.channel().id().asLongText();
             TcpClient tcpClient = tcpClientMap.get(channelId);
             if (tcpClient != null) {
-                // 零拷贝共享帧内容底层内存，引用计数 +1，写完成后由 Netty 自动 release
-                ByteBuf buff = bufCopyStrategy.wrap(((BinaryWebSocketFrame) webSocketFrame).content());
-                tcpClient.writeAndFlush(buff);
+                // 按 chunk 策略拆帧转发；wrap 持有引用撑过异步写出
+                chunkStrategy.slice(((BinaryWebSocketFrame) webSocketFrame).content(), slice -> {
+                    ByteBuf buff = bufCopyStrategy.wrap(slice);
+                    tcpClient.writeAndFlush(buff);
+                });
             }
         }
     }
@@ -113,7 +118,7 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             Integer targetPort = Integer.parseInt(paths[3]);
 
             log.info("开始建立 tcp 连接开始 targetHost: {} targetPort {}", targetHost, targetPort);
-            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy);
+            TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy, chunkStrategy);
             tcpClientMap.put(ctx.channel().id().asLongText(), tcpClient);
             pool.execute(tcpClient);
             log.info("开始建立 tcp 连接 结束");

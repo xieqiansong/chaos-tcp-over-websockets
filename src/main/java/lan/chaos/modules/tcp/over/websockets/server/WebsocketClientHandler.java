@@ -6,6 +6,7 @@ import io.netty.channel.*;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.websocketx.*;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
+import lan.chaos.modules.tcp.over.websockets.chunk.ChunkStrategy;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.extern.slf4j.Slf4j;
@@ -16,13 +17,15 @@ import lombok.extern.slf4j.Slf4j;
 public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> {
     private final Channel tcpChannel;
     private final BufCopyStrategy bufCopyStrategy;
+    private final ChunkStrategy chunkStrategy;
     private WebSocketClientHandshaker handshaker;
     private ChannelPromise channelPromise;
 
 
-    public WebsocketClientHandler(Channel channel, BufCopyStrategy bufCopyStrategy) {
+    public WebsocketClientHandler(Channel channel, BufCopyStrategy bufCopyStrategy, ChunkStrategy chunkStrategy) {
         this.tcpChannel = channel;
         this.bufCopyStrategy = bufCopyStrategy;
+        this.chunkStrategy = chunkStrategy;
     }
 
     @Override
@@ -81,9 +84,11 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
                 this.tcpChannel.writeAndFlush(frame.content());
             } else if (frame instanceof BinaryWebSocketFrame) {
                 log.debug("BinaryWebSocketFrame msg");
-                // 零拷贝共享帧内容底层内存，引用计数 +1，写完成后由 Netty 自动 release
-                ByteBuf buff = bufCopyStrategy.wrap(frame.content());
-                this.tcpChannel.writeAndFlush(buff);
+                // 按 chunk 策略拆帧转发；wrap 持有引用撑过异步写出
+                chunkStrategy.slice(frame.content(), slice -> {
+                    ByteBuf buff = bufCopyStrategy.wrap(slice);
+                    this.tcpChannel.writeAndFlush(buff);
+                });
             } else if (frame instanceof PingWebSocketFrame) {
                 log.debug("心跳请求");
                 ctx.channel().write(new PongWebSocketFrame(frame.content().retain()));
