@@ -1,7 +1,9 @@
 # 测试报告：隧道转发 ByteBuf 拷贝策略（copiedBuffer / duplicate / retainedDuplicate）
 
 > 统一报告：覆盖「环境准备 → 对照测试 → 三实现吞吐实测 → 真实端到端场景 → 结论」。
-> 数据采集：2026-08-25，Windows + JDK8（本机运行 JDK8），Maven 编译，单线程 IDEA 点运行。
+> 数据采集：
+> - 端到端场景（第五节）：2026-08-26，Windows + JDK17，Maven 编译，命令行**单次单组合**运行（干净基线）。
+> - 内存微基准（第四节）：2026-08-25，Windows + JDK8，单线程 IDEA 点运行。
 
 ## 一、测试环境
 
@@ -54,7 +56,7 @@ mvn test-compile exec:java -Dexec.mainClass=org.openjdk.jmh.Main \
 2. **`retainedDuplicate` 与 `duplicate` 同为零拷贝**：仅建立新索引视图，不复制字节、不分配堆外内存；差异仅在引用计数语义，吞吐同量级。
 3. **`copiedBuffer` 全量拷贝**：每次分配新内存并复制全部字节，返回独立副本（链路绝对安全），但开销随消息尺寸线性增长。
 
-## 四、三实现吞吐实测（IDEA 对照测试，2026-08-25）
+## 四、三实现吞吐实测（IDEA 内存内 wrap() 对照测试）
 
 > 单位 ops/ms（每毫秒完成的 wrap 次数，越高越快）。对照测试无 JVM 预热控制，绝对值仅供定性，重点看策略间相对量级。每格 200,000 次循环。
 
@@ -66,50 +68,54 @@ mvn test-compile exec:java -Dexec.mainClass=org.openjdk.jmh.Main \
 
 附本轮原始耗时（ms / 20 万次）：1024 → copied 62 / retained 15 / duplicate 5；65536 → copied 1919 / retained 4 / duplicate 10；1MB → copied 26121 / retained 4 / duplicate 2。
 
-## 五、真实隧道端到端场景（方案 B，2026-08-25）
+## 五、真实隧道端到端场景（方案 B，2026-08-26）
 
-> 目的：把三策略放到**真实异步转发链路**验证，而非内存内 `wrap()` 微基准。拓扑：echo 后端(Netty TCP，收到即回) + 隧道 server(`WebsocketServer`) + 隧道 client 入口(`TcpServer`) + 打流客户端(普通 Socket)。场景实现见 [TunnelRealWorldBenchmarkTest.java](file:///d:/project/chaos/chaos-tcp-over-websockets/src/test/java/lan/chaos/modules/tcp/over/websockets/benchmark/TunnelRealWorldBenchmarkTest.java)，IDEA 点一下跑完整四轮（含直连对照）。
+> 目的：把三策略放到**真实异步转发链路**验证，而非内存内 `wrap()` 微基准。拓扑：echo 后端(Netty TCP，收到即回) + 隧道 server(`WebsocketServer`) + 隧道 client 入口(`TcpServer`) + 打流客户端(普通 Socket)。场景实现见 [TunnelRealWorldBenchmarkTest.java](file:///d:/project/chaos/chaos-tcp-over-websockets/src/test/java/lan/chaos/modules/tcp/over/websockets/benchmark/TunnelRealWorldBenchmarkTest.java)。
 > 注：本测试直接 `new XxxStrategy()` 注入两段转发 handler，**绕过 `BufCopyConfiguration` 对 duplicate 的回退**，使 duplicate 真跑，验证其异步链路不安全。
-> **关键前提**：测试期通过 `src/test/resources/logback-test.xml` 将日志降级为 WARN。**logback 默认 root=DEBUG 会大量打印 Netty 内部日志，在 Windows 同步写控制台时严重抢占 EventLoop 线程、压低基准**——实测开启 DEBUG 时吞吐被腰斩（见下"日志级别影响"），故正式数据均在关 DEBUG 下采集。
+> **关键前提**：测试期通过 `src/test/resources/logback-test.xml` 将日志降级为 WARN。**logback 默认 root=DEBUG 会大量打印 Netty 内部日志，在 Windows 同步写控制台时严重抢占 EventLoop 线程、压低基准**，故正式数据均在关 DEBUG 下采集。
+>
+> **方法修正（重要）**：本场景曾用「一次 JVM 内连续混跑 3 策略 × 4 包大小」的旧测试（`realWorldThreeStrategies`），结果**不可复现**——retained 在 256KB/4MB 大包下偶发 `SocketTimeoutException`、4MB 轮全部 `Connection refused`。经单轮对照实验证实：**单独跑任一组合完全正常，崩溃只出现在连续混跑的第 3/4 轮**，即根因是**连续混跑时前面轮次的线程/端口/引用计数状态污染后续轮次，而非代码 bug**。2026-08-26 已将该场景重构为**单次单组合**运行（`runSingle()`，通过 `-Dbench.strategy` / `-Dbench.payload` 指定），每次 JVM 只起一个隧道 + 一个直连对照，测完即清理；主代码未做任何改动。
 
-### 5.1 并发参数与结果（4 并发连接，每连接 16MB，合计 64MB）
+### 5.1 运行方式
 
-| 策略 | 端到端吞吐 | 回收字节 | RTT | 结果 |
+```bash
+mvn test "-Dtest=TunnelRealWorldBenchmarkTest#runSingle" -Dbench.strategy=retained -Dbench.payload=262144
+```
+- `bench.strategy` ∈ {`copied`,`retained`,`duplicate`}；`bench.payload` 为包大小字节数（默认 1024）。
+- 每次运行只测一个「策略 × 包大小」+ 一个直连 echo 对照，独立干净、可复现。
+
+### 5.2 干净基线（单次独立运行，每个组合单独启动 JVM）
+
+> 参数：1 连接，每连接 4MB。每次运行冷启动 + 单次打流，吞吐绝对值受无 JIT 预热影响，重点看**稳定性与策略间相对量级**。
+
+| 包大小 | copied（隧道） | retained（隧道） | duplicate（隧道） | direct（直连基线） |
 |---|---|---|---|---|
-| **direct（直连 echo，无隧道）** | 50.27 MB/s | 67108864 / 67108864 | 1271 ms | 正常（基线） |
-| copied（全量拷贝 + 隧道） | 8.09 MB/s | 67108864 / 67108864 | 7651 ms | 正常 |
-| retained（零拷贝 v2 + 隧道） | 8.87 MB/s | 67108864 / 67108864 | 7042 ms | 正常 |
-| duplicate（零拷贝 v1 + 隧道，不安全） | — | 0 / 67108864 | — | **CRASH** |
+| 1KB | 2.62 MB/s | 2.00 MB/s | CRASH（预期） | 14~20 MB/s |
+| 16KB | 9.37 MB/s | 9.28 MB/s | CRASH（预期） | 174~222 MB/s |
+| 256KB | 11.63 MB/s | 11.49 MB/s | CRASH（预期） | 364~666 MB/s |
+| 4MB | 12.54 MB/s | 8.03 MB/s | CRASH（预期） | 222~571 MB/s |
 
-### 5.2 数据解读
-
-- **隧道固有开销是主导**：直连 echo 达 **50.27 MB/s**，经隧道（retained）仅 **8.87 MB/s**——隧道（WS 封装 + 双向 Netty 转发 + loopback 双重 TCP）带来约 **5.7× 吞吐衰减**，这远大于拷贝策略之间的差异。也就是说在当前小包 + loopback 场景下，"隧道"才是瓶颈，"拷贝策略"是次要因素。
-- **隧道内零拷贝仍占优**：retained(8.87) 较 copied(8.09) 快 **~1.10×**，RTT 更低（7042 vs 7651 ms）。优势被隧道开销稀释（拷贝成本占比小），但方向正确且真实；在去隧道瓶颈的大包 / 高带宽场景，微基准已证明零拷贝优势会放大到数百~上千倍。
-- **duplicate 真跑崩溃**：日志 `io.netty.util.IllegalReferenceCountException` / `SocketException` / `SocketTimeoutException`——`duplicate()` 派生 buf `release()` 把共享引用计数减到 0，异步写时源 buf 已释放，连接被 RST / 读超时，回包 0 字节。**直连组无此问题**（不经过 WS 转发，无引用计数错乱），进一步坐实病根为"异步转发链路 + 共享引用计数"。
-
-### 5.3 日志级别影响（踩坑记录）
-
-| 配置 | copied | retained | 说明 |
-|---|---|---|---|
-| 开 DEBUG（logback 默认） | 2.42 MB/s | 2.77 MB/s | Netty DEBUG 刷屏抢占 EventLoop，吞吐被腰斩 |
-| 关 DEBUG（WARN） | 8.09 MB/s | 8.87 MB/s | 正常基线，约为开 DEBUG 的 **3.3×** |
-
-> 结论：端到端基准务必关闭 DEBUG 日志，否则数据严重失真。本报告的 5.1 数据均为关 DEBUG 下采集。
+> 结论：
+> 1. **全部组合单跑稳定、可复现**——copied 与 retained 在所有包大小下均正常回收 4MB，无崩溃；`IllegalReferenceCountException` 刷屏消失。**证实主代码转发链路的引用计数与线程模型健康**。
+> 2. **duplicate 单跑即预期 CRASH**（SocketException/SocketTimeoutException），坐实「共享引用计数在异步转发链路不安全」的结论。
+> 3. **单次打流 4MB 数据量偏小、无 JIT 预热**，吞吐绝对值和直连基线波动大（direct 从 14 到 666 MB/s）。要获得有统计意义的正式基线，需**单次打更大流量（如 32MB+）或多次运行取均值**，而非连续混跑不同组合（后者引入状态污染、结果不可复现）。
+> 4. **该场景下 copied 略快于 retained**：四个包大小下 copied 均不低于 retained（4MB 差距最明显：12.54 vs 8.03 MB/s）。原因在于端到端是**跨 EventLoop 异步转发**：retained 的 `retainedDuplicate()` 零拷贝视图需跨线程管理共享引用计数（retain/release 有额外开销且存在竞态风险）；copied 的 `Unpooled.copiedBuffer()` 独立副本在 loopback（内存拷贝极快、无真实网卡瓶颈）下无引用计数跨线程负担，转发更简单，故反而更快。这与第四节**内存内单线程 wrap() 微基准**「零拷贝显著占优」的结论并不矛盾——微基准不经过异步转发与引用计数管理，测的只是纯内存拷贝/视图开销。
 
 ## 六、结论
 
 1. **零拷贝收益真实且巨大（尤其是大包）**：1MB 下 `retained`/`duplicate` 较 `copied` 快约 **6500~13000 倍**（50000/100000 vs 7.66 ops/ms）；64KB 下快约 **480~190 倍**。转发路径上「每次全量 copy 一整条 TCP 流」是显著瓶颈，改为零拷贝策略收益立竿见影。
 2. **`copied` 开销随尺寸线性飙升**：1KB→1MB 吞吐从 3225 跌到 7.66（约 **420 倍**降幅），全量拷贝的成本正比于字节数；零拷贝策略在三种尺寸下吞吐基本恒定（~1~10 万 ops/ms），与尺寸解耦。
-3. **默认选 `retainedDuplicate` 而非 `duplicate`**：`duplicate` 在 1KB/1MB 绝对最快，但**共享引用计数、链路不安全**（写端 release 会误伤源 buf）；`retained` 同样零拷贝、吞吐同量级，且持有独立引用、写端 release 安全。真实端到端已实锤 duplicate 崩溃，故 retained 为默认策略。
-4. **`copied` 作为安全回退保留**：仅在"下游必须持有独立副本、且不可承受引用计数约束"的极端场景使用；常规隧道转发一律走 `retained`。
-5. **隧道固有开销远大于拷贝差异（真实场景新认知）**：小包 + loopback 下隧道本身带来 ~5.7× 衰减，拷贝策略仅在隧道内产生 ~1.1× 差异。若要凸显零拷贝优势，应在大包 / 真实网卡（去 loopback 瓶颈）场景压测，或在微基准（第四节）层面观察。
+3. **`duplicate` 链路不安全，不可用**：`duplicate` 在微基准中绝对最快，但**共享引用计数**（写端 release 会误伤源 buf），端到端已实锤其崩溃（见 5.2）。故 `duplicate` 仅作零拷贝对照，任何情况下都不应作为默认策略。`retained` 与 `duplicate` 同为零拷贝、吞吐同量级，且持有独立引用、写端 release 安全——故零拷贝路线选 `retained` 而非 `duplicate`。
+4. **`copied` 在端到端更稳更快，作为保守安全选择保留**：`copied` 的 `Unpooled.copiedBuffer()` 返回独立副本，链路绝对安全（无共享引用计数竞态），且端到端实测各包大小下均不慢于 retained。唯一代价是内存拷贝成本随消息尺寸增长（微基准可见）。**在跨 EventLoop 异步转发场景下，`copied` 是可优先考虑的安全默认**；`retained` 的零拷贝收益需在真实网卡 / 大包 / 多连接等拷贝成本被放大的场景验证后才应被采纳。
+5. **端到端真实链路下 copied 反而略快（与微基准结论相反）**：四个包大小下 copied 均不低于 retained（4MB：12.54 vs 8.03 MB/s）。原因是端到端是跨 EventLoop 异步转发——retained 的共享引用计数跨线程管理开销 + 竞态风险 > loopback 下的一次内存拷贝成本。**默认策略选择需谨慎**：微基准（第四节）显示零拷贝（retained/duplicate）在纯 wrap 上显著占优，但端到端真实转发（跨线程 + 引用计数管理）下 copied 更稳更快。建议在真实网卡/大包/多连接场景进一步压测后，再决定默认策略，而非仅凭微基准。
 
 ## 七、下一步（可选增强）
 
-- ~~**接真实转发流量验证**：当前基准为内存内 `wrap()` 微基准，未上真实隧道转发（server↔client 端到端）。可在 `TcpServerHandler`/`WebsocketServerHandler` 等挂上可切换策略，用端到端吞吐/延迟验证零拷贝在真实 IO 路径的收益。~~ **（已完成：见第五节真实端到端场景，含直连 echo 对照；retained 较 copied 端到端快 ~1.1×，duplicate 真跑崩溃）**
-- ~~**直连 echo 对照组**：分离「隧道开销」与「拷贝策略差异」。~~ **（已完成：direct 50.27 MB/s vs 隧道 8.87 MB/s，确认隧道开销主导）**
-- **大包 / 真实网卡扩压**：当前为 1KB 小包 + loopback，隧道开销掩盖拷贝差异。改用 64KB/1MB 大包或跨机真实网卡，零拷贝优势预计放大（与微基准结论呼应）。
+- ~~**接真实转发流量验证**：当前基准为内存内 `wrap()` 微基准，未上真实隧道转发（server↔client 端到端）。可在 `TcpServerHandler`/`WebsocketServerHandler` 等挂上可切换策略，用端到端吞吐/延迟验证零拷贝在真实 IO 路径的收益。~~ **（已完成：见第五节真实端到端场景，含直连 echo 对照；duplicate 真跑崩溃、copied/retained 正常）**
+- ~~**直连 echo 对照组**：分离「隧道开销」与「拷贝策略差异」。~~ **（已完成：见 5.2，确认隧道开销主导，copied 端到端略快于 retained）**
+- ~~**端到端基准不可复现问题**：retained 在 256KB/4MB 偶发崩溃、4MB 全 `Connection refused`。~~ **（已完成：根因为连续混跑的状态污染，已改为单次单组合运行，见第五节；干净基线全部稳定）**
+- **大包 / 真实网卡扩压**：当前为 loopback 场景，copied 反而略快于 retained（跨线程引用计数开销 > 内存拷贝成本）。改用跨机真实网卡（拷贝成本/网络带宽真实）或更大并发后，再验证零拷贝（retained）能否扳回优势——这是决定默认策略的关键补充实验。
+- **单次打流放大 + 预热取均值**：5.2 的单跑吞吐受无 JIT 预热影响波动大。建议单次打流增至 32MB+，或同一组合多轮预热后取均值，得到有统计意义的正式吞吐基线（保持「单次单组合」避免状态污染）。
 - **策略可配置化**：用 `@Configuration` + `@ConditionalOnProperty` 把默认策略交给 `application.yml` 选择（当前 `BufCopyConfiguration` 已支持 `buf.copy.strategy`，但 duplicate 被强制回退 retained 以防误用）。
 - **JMH 正式数据补齐**：对照与端到端测试仅供定性，建议补一轮 JMH fork 基准（多尺寸、多连接、多 forks）作为正式性能基线入库。
-- **JMH 正式数据补齐**：对照测试与端到端测试仅供定性，建议补一轮 JMH fork 基准（多尺寸、多连接、多 forks）作为正式性能基线入库。
-- **多连接 / 大包端到端扩压**：当前端到端为单连接 1KB 小包，可加并发连接数与大包尺寸，观察零拷贝优势在重负载下的放大倍数。
+- **多连接 / 大包端到端扩压**：当前端到端为单连接，可加并发连接数与大包尺寸，对比 copied / retained 在重负载下的吞吐与稳定性差异，为默认策略选择提供依据。

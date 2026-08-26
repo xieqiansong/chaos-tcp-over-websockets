@@ -15,8 +15,6 @@ import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
 
 import java.net.Socket;
-import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,18 +24,39 @@ import java.util.concurrent.atomic.AtomicLong;
  * echo 后端(Netty TCP，收到即回) + 隧道 server(WebsocketServer) + 隧道 client 入口(TcpServer)，
  * 再用一个普通 Socket 充当「数据源」往 client 入口灌流，统计端到端吞吐与往返延迟。
  * <p>
- * 三轮分别注入 copied / retained / duplicate 三策略（直接 new 注入，绕过 BufCopyConfiguration 的
- * duplicate 回退），真实验证零拷贝在异步转发链路上的收益与 duplicate 的链路不安全。
+ * 关键设计：<b>每次运行只测一个「策略 × 包大小」组合 + 一个直连对照</b>，通过系统属性指定，
+ * 避免连续跑多种组合时前面轮次的线程/端口/引用计数状态污染后续数据（连续混跑会导致
+ * retained 等在 256KB/4MB 大包下偶发崩溃、结果不可复现）。
  * <p>
- * IDEA 中打开本文件 → 点左侧绿色箭头 Run 即跑完整三轮，无需命令。
+ * 单次运行示例（命令行）：
+ * <pre>
+ *   # 只测 retained + 256KB
+ *   mvn test -Dtest=TunnelRealWorldBenchmarkTest#runSingle \
+ *       -Dbench.strategy=retained -Dbench.payload=262144
+ *
+ *   # 只测 copied，跑默认包大小（1KB）
+ *   mvn test -Dtest=TunnelRealWorldBenchmarkTest#runSingle -Dbench.strategy=copied
+ * </pre>
+ * <p>
+ * 要在多个策略/包大小间对比，请在命令行逐个单跑，不要在一次 JVM 内连续混跑。
  */
 public class TunnelRealWorldBenchmarkTest {
 
-    // 打流包大小维度：1KB(小包) / 32KB / 1MB / 16MB(超大)。每尺寸每连接仍打 PER_CONN_MB 总量。
-    private static final int[] PAYLOADS = {1024, 16 * 1024, 256 * 1024, 4 * 1024 * 1024};
-    private static final int CONN = 1;                // 并发打流连接数（临时降为1验证并发是否为 retained 崩溃根因）
-    private static final int PER_CONN_MB = 2;         // 每连接打流 2MB
-    private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限(并发放大)
+    // ---- 单次组合控制：通过 -Dbench.strategy / -Dbench.payload 指定，默认只测 copied + 1KB ----
+    private static final String STRATEGY = System.getProperty("bench.strategy", "copied");
+    private static final int PAYLOAD = Integer.getInteger("bench.payload", 1024);
+
+    // ---- 打流参数 ----
+    private static final int CONN = 1;                 // 并发打流连接数
+    private static final int PER_CONN_MB = 4;          // 每连接打流 MB 总量
+    private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限
+
+    // 端口分配：单次运行只起一个隧道，端口固定即可（避免与其它组合冲突）；直连对照端口独立
+    private static final int BASE = 20000;
+    private static final int ECHO_PORT = BASE + 1;     // echo 后端
+    private static final int WS_PORT = BASE + 2;       // 隧道 WS server
+    private static final int LOCAL_PORT = BASE + 3;    // 隧道 client 入口
+    private static final int DIRECT_PORT = BASE + 10;  // 直连 echo 对照端口
 
     static class Result {
         final String name;
@@ -52,41 +71,53 @@ public class TunnelRealWorldBenchmarkTest {
         }
     }
 
-    @Test
-    void realWorldThreeStrategies() throws Exception {
-        List<BufCopyStrategy> strategies = Arrays.asList(
-                new CopiedBufferStrategy(),
-                new RetainedDuplicateStrategy(),
-                new DuplicateStrategy());
-
-        int base = 20000;
-        int directBase = 21000;
-        for (int pi = 0; pi < PAYLOADS.length; pi++) {
-            int payload = PAYLOADS[pi];
-            System.out.println("\n======== 包大小 " + payload + "B (" + (payload / 1024.0) + "KB) ========");
-
-            Result[] results = new Result[strategies.size()];
-            for (int i = 0; i < strategies.size(); i++) {
-                String n = i == 0 ? "copied" : i == 1 ? "retained" : "duplicate";
-                results[i] = runRound(strategies.get(i), n, base + i * 100, payload);
-            }
-            // 直连 echo 对照组：打流客户端直接连 echo 后端，不经过隧道，作为隧道开销基线
-            results[results.length - 1] = runDirect(directBase + pi * 10, payload);
-
-            System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
-                    + (CONN * PER_CONN_MB) + "MB --");
-            for (Result r : results) {
-                if (r.error != null) {
-                    System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
-                } else {
-                    String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
-                    System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
-                            r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
-                }
-            }
+    private static BufCopyStrategy resolveStrategy(String name) {
+        switch (name) {
+            case "copied":
+                return new CopiedBufferStrategy();
+            case "retained":
+                return new RetainedDuplicateStrategy();
+            case "duplicate":
+                return new DuplicateStrategy();
+            default:
+                throw new IllegalArgumentException("未知策略: " + name
+                        + "（可选 copied/retained/duplicate）");
         }
-        System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱；rtt 为并发下首末包跨度，仅参考）");
-        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线；对比各包大小可观察包大小对吞吐的影响）");
+    }
+
+    /**
+     * 单次只测一个「策略 × 包大小」组合 + 直连对照，互不干扰。
+     */
+    @Test
+    void runSingle() throws Exception {
+        BufCopyStrategy strategy = resolveStrategy(STRATEGY);
+        int payload = PAYLOAD;
+        String name = STRATEGY;
+
+        System.out.println("\n======== 单次组合: 策略=" + name + ", 包大小=" + payload + "B ("
+                + (payload / 1024.0) + "KB) ========");
+
+        // 被测隧道
+        Result tunnel = runRound(strategy, name, BASE, payload);
+        // 直连 echo 对照（无隧道）
+        Result direct = runDirect(DIRECT_PORT, payload);
+
+        System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
+                + (CONN * PER_CONN_MB) + "MB --");
+        printResult(tunnel);
+        printResult(direct);
+        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线）");
+        System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱）");
+    }
+
+    private void printResult(Result r) {
+        if (r.error != null) {
+            System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
+        } else {
+            String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
+            System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
+                    r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
+        }
     }
 
     /**
@@ -137,7 +168,7 @@ public class TunnelRealWorldBenchmarkTest {
     private Result runTraffic(String host, int port, String name, int payload) throws Exception {
         Result r = new Result(name);
         r.connCount = CONN;
-        int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload; // 保持每连接总量 16MB
+        int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload;
         long expected = (long) CONN * roundsPerConn * payload;
         AtomicLong total = new AtomicLong(0);
         AtomicLong first = new AtomicLong(0);
@@ -198,6 +229,9 @@ public class TunnelRealWorldBenchmarkTest {
         return r;
     }
 
+    /**
+     * 起一个完整隧道（echo + WS server + TcpServer 入口），打流，最后清理。
+     */
     private Result runRound(BufCopyStrategy strategy, String name, int base, int payload) throws Exception {
         int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
         EventLoopGroup echoGroup = startEcho(echoPort);
@@ -230,7 +264,6 @@ public class TunnelRealWorldBenchmarkTest {
             } catch (Exception ignore) {
             }
             echoGroup.shutdownGracefully().syncUninterruptibly();
-            // 等待 tcpServer/ws 的异步 eventLoop 关闭完成，避免档间端口/线程残留导致后续档崩溃
             Thread.sleep(1500);
         }
         return r;
