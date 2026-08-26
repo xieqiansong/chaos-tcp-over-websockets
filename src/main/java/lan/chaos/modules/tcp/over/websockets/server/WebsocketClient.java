@@ -23,7 +23,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 
 @Slf4j
-public class WebsocketClient implements Runnable {
+public class WebsocketClient {
     private final Channel channel;
     private final BufCopyStrategy bufCopyStrategy;
 
@@ -76,13 +76,7 @@ public class WebsocketClient implements Runnable {
         });
     }
 
-    @Override
-    public void run() {
-        try {
-            this.channel.closeFuture().sync();
-        } catch (Exception e) {
-            log.error("websocket client 建立连接失败, 错误信息: ", e);
-        }
-        log.info("websocket client over");
-    }
+    // 原 run() 仅做 channel.closeFuture().sync() 阻塞驻留以保活连接引用。
+    // 连接在构造时已同步建好，且被 websocketClientMap 强引用持有，不会 GC，
+    // 故无需驻留线程；连接生命周期由 Netty EventLoop 管理。
 }

@@ -15,7 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Data
-public class TcpClient implements Runnable {
+public class TcpClient {
     private final String targetHost;
     private final Integer targetPort;
     private EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
@@ -44,6 +44,17 @@ public class TcpClient implements Runnable {
                         ch.pipeline().addLast(new TcpClientHandler(channel, bufCopyStrategy));
                     }
                 });
+        // 构造时同步建立到目标 echo 的连接（与 WebsocketClient 一致），
+        // 避免依赖外部固定线程池执行 run()。连接建立后由 EventLoop 管理生命周期，无需驻留线程。
+        try {
+            channelFuture = bootstrap.connect(targetHost, this.targetPort).sync();
+            if (channelFuture.isSuccess()) {
+                log.info("建立tcp连接成功, target ip: {}, port {}", this.targetHost, this.targetPort);
+            }
+        } catch (InterruptedException e) {
+            log.error("error: ", e);
+            Thread.currentThread().interrupt();
+        }
     }
 
     public void writeAndFlush(ByteBuf msg) {
@@ -55,26 +66,11 @@ public class TcpClient implements Runnable {
     }
 
     public void close() {
-        try {
-            channelFuture.channel().closeFuture().sync();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+        // 非阻塞关闭：原实现 closeFuture().sync() 在 EventLoop 线程（handlerRemoved 回调）调用会阻塞，
+        // 改为直接关闭通道，连接关闭由 EventLoop 异步完成，避免死锁/卡住。
+        ChannelFuture cf = channelFuture;
+        if (cf != null && cf.channel() != null) {
+            cf.channel().close();
         }
-    }
-
-    @Override
-    public void run() {
-        try {
-            channelFuture = bootstrap.connect(targetHost, this.targetPort).sync();
-            if (channelFuture.isSuccess()) {
-                log.info("建立tcp连接成功, target ip: {}, port {}", this.targetHost, this.targetPort);
-            }
-            channelFuture.channel().closeFuture().sync();
-        } catch (InterruptedException e) {
-            log.error("error: ", e);
-        } finally {
-            workGroup.shutdownGracefully();
-        }
-        log.debug("建立连接结束.... ");
     }
 }

@@ -16,15 +16,12 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import static io.netty.handler.codec.http.HttpUtil.isKeepAlive;
 import static io.netty.handler.codec.http.HttpUtil.setContentLength;
 
 @Slf4j
 public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> {
-    private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, TcpClient> tcpClientMap = new ConcurrentHashMap<>();
     private final BufCopyStrategy bufCopyStrategy;
     private WebSocketServerHandshaker handshaker;
@@ -113,9 +110,9 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             Integer targetPort = Integer.parseInt(paths[3]);
 
             log.info("开始建立 tcp 连接开始 targetHost: {} targetPort {}", targetHost, targetPort);
+            // TcpClient 构造时已同步建立到目标的 TCP 连接，无需外部线程池执行 run()
             TcpClient tcpClient = new TcpClient(targetHost, targetPort, ctx.channel(), bufCopyStrategy);
             tcpClientMap.put(ctx.channel().id().asLongText(), tcpClient);
-            pool.execute(tcpClient);
             log.info("开始建立 tcp 连接 结束");
 
             //构造握手响应返回

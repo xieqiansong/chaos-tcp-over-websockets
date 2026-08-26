@@ -11,12 +11,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 @Slf4j
 public class TcpServerHandler extends ChannelInboundHandlerAdapter {
-    private final ExecutorService pool = Executors.newFixedThreadPool(32);
     private final Map<String, WebsocketClient> websocketClientMap = new ConcurrentHashMap<>();
     private final String wsUrl;
     private final BufCopyStrategy bufCopyStrategy;
@@ -31,9 +28,9 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
         String channelId = ctx.channel().id().asLongText();
         log.debug("tcp server active ....." + channelId);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接, " + channelId);
+        // WebsocketClient 构造时已同步完成 connect + 握手，无需外部线程池执行 run() 保活
         WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel(), bufCopyStrategy);
         websocketClientMap.put(channelId, websocketClient);
-        pool.execute(websocketClient);
         log.debug("tcp 客户端开始和 websocket 服务端建立连接 结束");
     }
 
