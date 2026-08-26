@@ -116,8 +116,10 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             log.info("开始建立 tcp 连接 结束");
 
             //构造握手响应返回
+            // maxFramePayloadLength 默认 64KB，会把大包切成大量小帧、放大每帧编解码/转发/flush 固定开销，
+            // 这里显式调大到 8MB 以减少帧数（配合收包缓冲，见 TcpServer）。
             WebSocketServerHandshakerFactory wsFactory =
-                    new WebSocketServerHandshakerFactory("", null, false);
+                    new WebSocketServerHandshakerFactory("", null, false, 8 * 1024 * 1024);
             handshaker = wsFactory.newHandshaker(req);
             if (handshaker == null) {
                 WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());

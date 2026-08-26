@@ -39,7 +39,9 @@ public class WebsocketClient {
         } catch (URISyntaxException e) {
             throw new RuntimeException(e);
         }
-        final WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders());
+        // maxFramePayloadLength 默认 64KB，调大到 8MB 以支持大帧、减少大包被切成小帧的固定开销（与 server 端一致）
+        final WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
+                uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders(), 8 * 1024 * 1024);
         final WebsocketClientHandler wch = new WebsocketClientHandler(tcpChannel, bufCopyStrategy);
         bootstrap.group(workGroup)
                 .option(ChannelOption.SO_KEEPALIVE, true)
@@ -50,7 +52,7 @@ public class WebsocketClient {
                         socketChannel.pipeline()
                                 .addLast(new HttpClientCodec())
 //                                .addLast(new LoggingHandler(LogLevel.INFO))
-                                .addLast(new HttpObjectAggregator(65536))
+                                .addLast(new HttpObjectAggregator(8 * 1024 * 1024))
                                 .addLast(wch);
                     }
                 });

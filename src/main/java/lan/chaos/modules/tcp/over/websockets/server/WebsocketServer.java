@@ -47,7 +47,7 @@ public class WebsocketServer implements Closeable {
                             socketChannel.pipeline()
                                     .addLast(new HttpServerCodec())
 //                                    .addLast(new LoggingHandler(LogLevel.INFO))
-                                    .addLast(new HttpObjectAggregator(65536))
+                                    .addLast(new HttpObjectAggregator(8 * 1024 * 1024))
                                     .addLast(new WebsocketServerHandler(bufCopyStrategy));
                         }
                     });
