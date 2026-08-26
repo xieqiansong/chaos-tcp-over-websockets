@@ -39,7 +39,8 @@ public class TcpServer implements Closeable {
 
             bootstrap.group(bossGroup, workGroup)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
-                    .childOption(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(4 * 1024)) // [DIAG] 固定收包 4KB
+                    // 移除固定 4KB 收包分配器，改用 Netty 默认 AdaptiveRecvByteBufAllocator（自动适配至 64KB），
+                    // 避免大包被切成上千个 4KB 微块导致转发/flush/跨线程次数爆炸
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         protected void initChannel(SocketChannel ch) {

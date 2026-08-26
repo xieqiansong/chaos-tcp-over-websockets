@@ -14,7 +14,14 @@ import lan.chaos.modules.tcp.over.websockets.client.TcpServer;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -45,6 +52,13 @@ public class TunnelRealWorldBenchmarkTest {
     // ---- 单次组合控制：通过 -Dbench.strategy / -Dbench.payload 指定，默认只测 copied + 1KB ----
     private static final String STRATEGY = System.getProperty("bench.strategy", "copied");
     private static final int PAYLOAD = Integer.getInteger("bench.payload", 1024);
+
+    // ---- 标准格式结果输出文件（CSV，追加）。默认写 target/bench-results.log（构建输出目录，gitignore 忽略）----
+    private static final String RESULTS_FILE = System.getProperty(
+            "bench.outfile", "target" + File.separator + "bench-results.log");
+    private static final String RESULTS_HEADER =
+            "timestamp,strategy,payloadBytes,tunnelMbPerSec,tunnelRttMs,tunnelReceived,tunnelError,"
+                    + "directMbPerSec,directRttMs,directReceived,directError";
 
     // ---- 打流参数 ----
     private static final int CONN = 1;                 // 并发打流连接数
@@ -108,6 +122,60 @@ public class TunnelRealWorldBenchmarkTest {
         printResult(direct);
         System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线）");
         System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱）");
+
+        // 以标准 CSV 格式追加到结果文件，供程序化解析（不依赖解析控制台输出）
+        appendToResultsFile(tunnel, direct);
+    }
+
+    /**
+     * 追加一次「隧道 + 直连」结果到输出文件（CSV 追加模式，每组合一行，含隧道与 direct 对照）。首次写入先输出表头。
+     */
+    private void appendToResultsFile(Result tunnel, Result direct) {
+        File f = new File(RESULTS_FILE);
+        if (f.getParentFile() != null) {
+            f.getParentFile().mkdirs();
+        }
+        String ts = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        boolean firstWrite = !f.exists() || f.length() == 0;
+        try (BufferedWriter w = new BufferedWriter(
+                new FileWriter(f, StandardCharsets.UTF_8, true))) {
+            if (firstWrite) {
+                w.write(RESULTS_HEADER);
+                w.newLine();
+            }
+            w.write(csvRow(ts, tunnel, direct));
+            w.newLine();
+        } catch (IOException e) {
+            System.err.println("[bench] 写入结果文件失败 " + RESULTS_FILE + ": " + e.getMessage());
+        }
+        System.out.println("[bench] 结果已追加到 " + f.getAbsolutePath());
+    }
+
+    /**
+     * 单行 CSV：一行包含「隧道结果 + 直连对照」，数值 "%.2f"，错误字段为空字符串。
+     * 字段顺序与 RESULTS_HEADER 一致。
+     */
+    private String csvRow(String ts, Result tunnel, Result direct) {
+        return String.join(",",
+                ts,
+                tunnel.name,
+                String.valueOf(PAYLOAD),
+                fmtNum(tunnel.mbPerSec),
+                fmtNum(tunnel.rttMs),
+                String.valueOf(tunnel.receivedBytes),
+                tunnel.error == null ? "" : csvEscape(tunnel.error),
+                fmtNum(direct.mbPerSec),
+                fmtNum(direct.rttMs),
+                String.valueOf(direct.receivedBytes),
+                direct.error == null ? "" : csvEscape(direct.error));
+    }
+
+    private String fmtNum(double v) {
+        return String.format("%.2f", v);
+    }
+
+    private String csvEscape(String s) {
+        return '"' + s.replace("\"", "\"\"") + '"';
     }
 
     private void printResult(Result r) {
