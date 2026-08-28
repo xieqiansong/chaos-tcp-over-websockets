@@ -12,6 +12,8 @@ import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -66,13 +68,27 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
 
         WebSocketFrame frame = (WebSocketFrame) msg;
         if (frame instanceof TextWebSocketFrame) {
-            log.info("v2 Client 收到文本: {}", ((TextWebSocketFrame) frame).text());
+            handleTextFrame(ctx, ((TextWebSocketFrame) frame).text());
         } else if (frame instanceof BinaryWebSocketFrame) {
             log.info("v2 Client 收到二进制帧, {} bytes", frame.content().readableBytes());
         } else if (frame instanceof PingWebSocketFrame) {
             ctx.channel().writeAndFlush(new PongWebSocketFrame(frame.content().retain()));
         } else if (frame instanceof CloseWebSocketFrame) {
             ctx.channel().close();
+        }
+    }
+
+    private void handleTextFrame(ChannelHandlerContext ctx, String text) {
+        ControlMessage msg = ControlMessageCodec.decode(text);
+        if (msg == null) {
+            log.info("v2 Client 收到普通文本: {}", text);
+            return;
+        }
+        if ("opened".equals(msg.getType())) {
+            log.info("v2 Client 收到会话建立确认, sessionId={}", msg.getSessionId());
+            // 暂存 sessionId（后续挂接数据转发）
+        } else {
+            log.warn("v2 Client 收到未知控制消息: {}", text);
         }
     }
 

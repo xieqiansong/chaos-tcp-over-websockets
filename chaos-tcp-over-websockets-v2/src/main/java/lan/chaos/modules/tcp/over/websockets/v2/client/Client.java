@@ -15,6 +15,8 @@ import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
 import lan.chaos.modules.tcp.over.websockets.v2.util.SharedEventLoopGroups;
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,6 +27,7 @@ import java.net.URISyntaxException;
  * v2 Client（骨架）。
  * <p>
  * 建立到 server 的 WebSocket 连接并完成握手（握手逻辑见 {@link WebSocketClientHandler}）。
+ * 提供 {@link #openSession} 向 server 发送会话建立控制消息。
  * 使用共享 EventLoopGroup（{@link SharedEventLoopGroups}），后续步骤再补充会话管理、多会话复用等。
  */
 @Slf4j
@@ -81,6 +84,15 @@ public class Client {
         }
     }
 
+    /**
+     * 向 server 发送 open 控制消息，请求建立会话。
+     * server 返回 opened（含 sessionId）后由 {@link WebSocketClientHandler} 处理。
+     */
+    public void openSession(String host, int port) {
+        ControlMessage open = ControlMessage.open(host, port);
+        sendText(ControlMessageCodec.encode(open));
+    }
+
     public void awaitClose() {
         if (channel == null) {
             return;
@@ -102,7 +114,6 @@ public class Client {
         String wsUrl = args.length > 0 ? args[0] : "ws://localhost:7002";
         Client client = new Client();
         client.connect(wsUrl);
-        client.sendText("hello from client");
         client.awaitClose();
     }
 }

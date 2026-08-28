@@ -19,15 +19,27 @@ import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory;
 import io.netty.util.CharsetUtil;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
+import lan.chaos.modules.tcp.over.websockets.v2.session.Session;
+import lan.chaos.modules.tcp.over.websockets.v2.session.SessionManager;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 负责 WebSocket 升级握手，并在握手完成后回显收到的帧。
+ * 负责 WebSocket 升级握手，并处理会话控制消息。
+ * <p>
+ * 收到 open 控制消息后，分配 sessionId 并通过 opened 消息返回给 client。
+ * 数据流转为二进制帧（后续步骤处理）。
  */
 @Slf4j
 public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object> {
 
+    private final SessionManager sessionManager;
     private WebSocketServerHandshaker handshaker;
+
+    public WebSocketUpgradeHandler(SessionManager sessionManager) {
+        this.sessionManager = sessionManager;
+    }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
@@ -70,14 +82,35 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
         }
         if (frame instanceof TextWebSocketFrame) {
             String text = ((TextWebSocketFrame) frame).text();
-            log.info("v2 Server 收到文本: {}", text);
-            ctx.channel().writeAndFlush(new TextWebSocketFrame("echo: " + text));
+            handleControlMessage(ctx, text);
             return;
         }
         if (frame instanceof BinaryWebSocketFrame) {
-            log.info("v2 Server 收到二进制帧, {} bytes", frame.content().readableBytes());
-            ctx.channel().writeAndFlush(new BinaryWebSocketFrame(frame.content().retain()));
+            // 数据流转发留待后续步骤
+            log.debug("v2 Server 收到二进制帧, {} bytes，暂不处理", frame.content().readableBytes());
         }
+    }
+
+    private void handleControlMessage(ChannelHandlerContext ctx, String text) {
+        ControlMessage msg = ControlMessageCodec.decode(text);
+        if (msg == null) {
+            log.warn("v2 Server 收到无法解析的控制消息: {}", text);
+            return;
+        }
+        if ("open".equals(msg.getType())) {
+            Session session = sessionManager.create(msg.getHost(), msg.getPort(), ctx.channel());
+            ControlMessage opened = ControlMessage.opened(session.getSessionId());
+            ctx.channel().writeAndFlush(new TextWebSocketFrame(ControlMessageCodec.encode(opened)));
+            log.info("v2 Server 已分配 sessionId={} 给目标 {}:{}", session.getSessionId(), msg.getHost(), msg.getPort());
+        } else {
+            log.warn("v2 Server 收到未知控制消息类型: {}", msg.getType());
+        }
+    }
+
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) {
+        log.info("v2 Server WebSocket 断开: {}", ctx.channel().id().asShortText());
+        sessionManager.removeByWsChannel(ctx.channel());
     }
 
     @Override
