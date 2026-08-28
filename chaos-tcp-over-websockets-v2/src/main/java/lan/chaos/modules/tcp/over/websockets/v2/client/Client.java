@@ -15,13 +15,19 @@ import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.DataFrameCodec;
 import lan.chaos.modules.tcp.over.websockets.v2.util.SharedEventLoopGroups;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * v2 Client（骨架）。
@@ -35,6 +41,17 @@ public class Client {
 
     private Channel channel;
 
+    /** 本地 TCP 通道 -> sessionId（open 后由 opened 消息回填）。 */
+    private final Map<Channel, Long> tcpChannelToSession = new ConcurrentHashMap<>();
+
+    /** sessionId -> 本地 TCP 通道（收到数据帧时按 sessionId 写回）。 */
+    private final Map<Long, Channel> sessionToTcpChannel = new ConcurrentHashMap<>();
+
+    /** requestId -> 本地 TCP 通道（open 发出后等待 opened 回填）。 */
+    private final Map<String, Channel> pendingByRequestId = new ConcurrentHashMap<>();
+
+    private final AtomicLong requestIdSeq = new AtomicLong(0);
+
     public Client() {
         SharedEventLoopGroups.acquire(); // 共享 worker group，引用计数 +1
     }
@@ -45,7 +62,7 @@ public class Client {
             URI uri = new URI(wsUrl);
             WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
                     uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders(), 8 * 1024 * 1024);
-            WebSocketClientHandler handler = new WebSocketClientHandler(handshaker);
+            WebSocketClientHandler handler = new WebSocketClientHandler(handshaker, this);
 
             Bootstrap bootstrap = new Bootstrap();
             bootstrap.group(SharedEventLoopGroups.worker())
@@ -86,11 +103,77 @@ public class Client {
 
     /**
      * 向 server 发送 open 控制消息，请求建立会话。
-     * server 返回 opened（含 sessionId）后由 {@link WebSocketClientHandler} 处理。
+     * server 返回 opened（含 sessionId + requestId）后由 {@link WebSocketClientHandler} 回填映射。
+     *
+     * @param tcpChannel 本地 TCP 通道，用于建立 sessionId 映射
      */
-    public void openSession(String host, int port) {
-        ControlMessage open = ControlMessage.open(host, port);
+    public void openSession(String host, int port, Channel tcpChannel) {
+        String requestId = String.valueOf(requestIdSeq.incrementAndGet());
+        pendingByRequestId.put(requestId, tcpChannel);
+        ControlMessage open = ControlMessage.open(host, port, requestId);
         sendText(ControlMessageCodec.encode(open));
+    }
+
+    /**
+     * opened 消息回填：按 requestId 找到本地 TCP 通道，建立双向映射。
+     */
+    public void onSessionOpened(long sessionId, String requestId) {
+        Channel tcpChannel = pendingByRequestId.remove(requestId);
+        if (tcpChannel == null) {
+            log.warn("v2 Client 收到未知 requestId 的 opened: {}", requestId);
+            return;
+        }
+        tcpChannelToSession.put(tcpChannel, sessionId);
+        sessionToTcpChannel.put(sessionId, tcpChannel);
+        log.info("v2 Client 会话映射建立: sessionId={} <-> tcp={}", sessionId, tcpChannel.id().asShortText());
+    }
+
+    /**
+     * 本地 TCP 收到数据时，打包成数据帧发送给 server。
+     */
+    public void sendData(Channel tcpChannel, ByteBuf payload) {
+        Long sessionId = tcpChannelToSession.get(tcpChannel);
+        if (sessionId == null || channel == null || !channel.isActive()) {
+            log.warn("v2 Client 无法发送数据：会话未建立或 WS 断开");
+            return;
+        }
+        ByteBuf frame = DataFrameCodec.encode(sessionId, payload);
+        channel.writeAndFlush(new BinaryWebSocketFrame(frame));
+    }
+
+    /**
+     * 收到数据帧时，按 sessionId 写回对应本地 TCP 通道。
+     */
+    public void onData(long sessionId, ByteBuf payload) {
+        Channel tcpChannel = sessionToTcpChannel.get(sessionId);
+        if (tcpChannel != null && tcpChannel.isActive()) {
+            tcpChannel.writeAndFlush(payload.retainedDuplicate());
+        }
+    }
+
+    /**
+     * 本地 TCP 断开时，清理会话映射并通知 server 关闭目标 TCP。
+     */
+    public void onTcpClosed(Channel tcpChannel) {
+        Long sessionId = tcpChannelToSession.remove(tcpChannel);
+        if (sessionId != null) {
+            sessionToTcpChannel.remove(sessionId);
+            log.info("v2 Client 本地 TCP 断开，清理会话映射 sessionId={}", sessionId);
+            ControlMessage close = ControlMessage.close(sessionId);
+            sendText(ControlMessageCodec.encode(close));
+        }
+    }
+
+    /**
+     * 收到 server 的 close 消息时，关闭对应本地 TCP 连接。
+     */
+    public void onServerClose(long sessionId) {
+        Channel tcpChannel = sessionToTcpChannel.remove(sessionId);
+        if (tcpChannel != null) {
+            tcpChannelToSession.remove(tcpChannel);
+            log.info("v2 Client 收到 close，关闭本地 TCP sessionId={}", sessionId);
+            tcpChannel.close();
+        }
     }
 
     public void awaitClose() {
@@ -110,10 +193,10 @@ public class Client {
         SharedEventLoopGroups.release(); // 共享 group，引用计数 -1，归零才真正关闭
     }
 
-    public static void main(String[] args) {
-        String wsUrl = args.length > 0 ? args[0] : "ws://localhost:7002";
-        Client client = new Client();
-        client.connect(wsUrl);
-        client.awaitClose();
-    }
+//    public static void main(String[] args) {
+//        String wsUrl = args.length > 0 ? args[0] : "ws://localhost:7002";
+//        Client client = new Client();
+//        client.connect(wsUrl);
+//        client.awaitClose();
+//    }
 }

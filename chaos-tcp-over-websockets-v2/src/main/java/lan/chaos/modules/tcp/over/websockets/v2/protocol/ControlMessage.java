@@ -25,17 +25,29 @@ public class ControlMessage {
     /** 会话 ID（opened 时由 server 返回）。 */
     private Long sessionId;
 
-    public static ControlMessage open(String host, int port) {
+    /** 请求关联 ID（open 时 client 生成，opened 时 server 原样回带，用于匹配）。 */
+    private String requestId;
+
+    public static ControlMessage open(String host, int port, String requestId) {
         ControlMessage msg = new ControlMessage();
         msg.setType("open");
         msg.setHost(host);
         msg.setPort(port);
+        msg.setRequestId(requestId);
         return msg;
     }
 
-    public static ControlMessage opened(long sessionId) {
+    public static ControlMessage opened(long sessionId, String requestId) {
         ControlMessage msg = new ControlMessage();
         msg.setType("opened");
+        msg.setSessionId(sessionId);
+        msg.setRequestId(requestId);
+        return msg;
+    }
+
+    public static ControlMessage close(long sessionId) {
+        ControlMessage msg = new ControlMessage();
+        msg.setType("close");
         msg.setSessionId(sessionId);
         return msg;
     }

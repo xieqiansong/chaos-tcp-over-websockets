@@ -1,10 +1,19 @@
 package lan.chaos.modules.tcp.over.websockets.v2.server;
 
+import cn.hutool.system.SystemUtil;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
@@ -19,17 +28,20 @@ import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory;
 import io.netty.util.CharsetUtil;
+import io.netty.util.ReferenceCountUtil;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.DataFrameCodec;
 import lan.chaos.modules.tcp.over.websockets.v2.session.Session;
 import lan.chaos.modules.tcp.over.websockets.v2.session.SessionManager;
+import lan.chaos.modules.tcp.over.websockets.v2.util.SharedEventLoopGroups;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 负责 WebSocket 升级握手，并处理会话控制消息。
+ * 负责 WebSocket 升级握手，并处理会话控制消息与数据帧。
  * <p>
- * 收到 open 控制消息后，分配 sessionId 并通过 opened 消息返回给 client。
- * 数据流转为二进制帧（后续步骤处理）。
+ * 收到 open 控制消息后：分配 sessionId、连接目标 TCP，并通过 opened 消息返回。
+ * 收到数据帧（二进制）后：按 sessionId 路由到对应 Session 的目标 TCP。
  */
 @Slf4j
 public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object> {
@@ -51,7 +63,6 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
     }
 
     private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest req) {
-        // 非 WebSocket 升级请求，直接返回 400
         if (!req.decoderResult().isSuccess()
                 || !"websocket".equalsIgnoreCase(req.headers().get(HttpHeaderNames.UPGRADE))) {
             DefaultFullHttpResponse res =
@@ -81,13 +92,11 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
             return;
         }
         if (frame instanceof TextWebSocketFrame) {
-            String text = ((TextWebSocketFrame) frame).text();
-            handleControlMessage(ctx, text);
+            handleControlMessage(ctx, ((TextWebSocketFrame) frame).text());
             return;
         }
         if (frame instanceof BinaryWebSocketFrame) {
-            // 数据流转发留待后续步骤
-            log.debug("v2 Server 收到二进制帧, {} bytes，暂不处理", frame.content().readableBytes());
+            handleDataFrame(ctx, (BinaryWebSocketFrame) frame);
         }
     }
 
@@ -99,11 +108,57 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
         }
         if ("open".equals(msg.getType())) {
             Session session = sessionManager.create(msg.getHost(), msg.getPort(), ctx.channel());
-            ControlMessage opened = ControlMessage.opened(session.getSessionId());
+            connectTarget(session, msg.getHost(), msg.getPort());
+            ControlMessage opened = ControlMessage.opened(session.getSessionId(), msg.getRequestId());
             ctx.channel().writeAndFlush(new TextWebSocketFrame(ControlMessageCodec.encode(opened)));
             log.info("v2 Server 已分配 sessionId={} 给目标 {}:{}", session.getSessionId(), msg.getHost(), msg.getPort());
+        } else if ("close".equals(msg.getType())) {
+            Session session = sessionManager.remove(msg.getSessionId());
+            if (session != null) {
+                session.close();
+                log.info("v2 Server 收到 close，关闭会话 sessionId={}", msg.getSessionId());
+            }
         } else {
             log.warn("v2 Server 收到未知控制消息类型: {}", msg.getType());
+        }
+    }
+
+    private void handleDataFrame(ChannelHandlerContext ctx, BinaryWebSocketFrame frame) {
+        ByteBuf buf = frame.content();
+        if (buf.readableBytes() < DataFrameCodec.HEADER_BYTES) {
+            log.warn("v2 Server 收到过短数据帧，丢弃");
+            return;
+        }
+        long sessionId = DataFrameCodec.decodeSessionId(buf);
+        Session session = sessionManager.get(sessionId);
+        if (session == null || session.getTargetTcpChannel() == null) {
+            log.warn("v2 Server 收到未知 sessionId={} 的数据帧，丢弃", sessionId);
+            return;
+        }
+        ByteBuf payload = DataFrameCodec.decodePayload(buf);
+        // 复制一份，避免在异步写完成后引用被释放的 WS 帧内容
+        session.getTargetTcpChannel().writeAndFlush(payload.retainedDuplicate());
+    }
+
+    private void connectTarget(Session session, String host, int port) {
+        Bootstrap bootstrap = new Bootstrap();
+        bootstrap.group(SharedEventLoopGroups.worker())
+                .channel(SystemUtil.getOsInfo().isWindows() ? NioSocketChannel.class : EpollSocketChannel.class)
+                .option(ChannelOption.SO_KEEPALIVE, true)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 3000)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline().addLast(new TargetTcpHandler(session.getSessionId(), session.getWsChannel(), sessionManager));
+                    }
+                });
+        try {
+            Channel channel = bootstrap.connect(host, port).sync().channel();
+            session.setTargetTcpChannel(channel);
+            log.info("v2 Server 已连接目标 TCP {}:{}, sessionId={}", host, port, session.getSessionId());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("v2 Server 连接目标 TCP 失败 {}:{}: ", host, port, e);
         }
     }
 

@@ -42,12 +42,13 @@ public class SessionManager {
     }
 
     /**
-     * 清理某条 WS 连接上的所有会话（连接断开时调用，后续步骤完善）。
+     * 清理某条 WS 连接上的所有会话（连接断开时调用），并关闭对应目标 TCP。
      */
     public void removeByWsChannel(Channel wsChannel) {
         bySessionId.entrySet().removeIf(entry -> {
             if (entry.getValue().getWsChannel() == wsChannel) {
                 log.info("连接断开，移除会话: {}", entry.getValue());
+                entry.getValue().close();
                 return true;
             }
             return false;

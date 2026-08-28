@@ -1,5 +1,6 @@
 package lan.chaos.modules.tcp.over.websockets.v2.client;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -14,19 +15,22 @@ import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessage;
 import lan.chaos.modules.tcp.over.websockets.v2.protocol.ControlMessageCodec;
+import lan.chaos.modules.tcp.over.websockets.v2.protocol.DataFrameCodec;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 负责 WebSocket 客户端握手，并在握手完成后打印/回显收到的帧。
+ * 负责 WebSocket 客户端握手，并处理控制消息与数据帧。
  */
 @Slf4j
 public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> {
 
     private final WebSocketClientHandshaker handshaker;
+    private final Client client;
     private ChannelPromise handshakeFuture;
 
-    public WebSocketClientHandler(WebSocketClientHandshaker handshaker) {
+    public WebSocketClientHandler(WebSocketClientHandshaker handshaker, Client client) {
         this.handshaker = handshaker;
+        this.client = client;
     }
 
     public ChannelPromise handshakeFuture() {
@@ -68,9 +72,9 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
 
         WebSocketFrame frame = (WebSocketFrame) msg;
         if (frame instanceof TextWebSocketFrame) {
-            handleTextFrame(ctx, ((TextWebSocketFrame) frame).text());
+            handleTextFrame(((TextWebSocketFrame) frame).text());
         } else if (frame instanceof BinaryWebSocketFrame) {
-            log.info("v2 Client 收到二进制帧, {} bytes", frame.content().readableBytes());
+            handleDataFrame((BinaryWebSocketFrame) frame);
         } else if (frame instanceof PingWebSocketFrame) {
             ctx.channel().writeAndFlush(new PongWebSocketFrame(frame.content().retain()));
         } else if (frame instanceof CloseWebSocketFrame) {
@@ -78,18 +82,30 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
         }
     }
 
-    private void handleTextFrame(ChannelHandlerContext ctx, String text) {
+    private void handleTextFrame(String text) {
         ControlMessage msg = ControlMessageCodec.decode(text);
         if (msg == null) {
             log.info("v2 Client 收到普通文本: {}", text);
             return;
         }
         if ("opened".equals(msg.getType())) {
-            log.info("v2 Client 收到会话建立确认, sessionId={}", msg.getSessionId());
-            // 暂存 sessionId（后续挂接数据转发）
+            client.onSessionOpened(msg.getSessionId(), msg.getRequestId());
+        } else if ("close".equals(msg.getType())) {
+            client.onServerClose(msg.getSessionId());
         } else {
             log.warn("v2 Client 收到未知控制消息: {}", text);
         }
+    }
+
+    private void handleDataFrame(BinaryWebSocketFrame frame) {
+        ByteBuf buf = frame.content();
+        if (buf.readableBytes() < DataFrameCodec.HEADER_BYTES) {
+            log.warn("v2 Client 收到过短数据帧，丢弃");
+            return;
+        }
+        long sessionId = DataFrameCodec.decodeSessionId(buf);
+        ByteBuf payload = DataFrameCodec.decodePayload(buf);
+        client.onData(sessionId, payload);
     }
 
     @Override
