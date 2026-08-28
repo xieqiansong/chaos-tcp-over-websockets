@@ -111,6 +111,16 @@ mvn -q test-compile exec:java "-Dexec.mainClass=org.openjdk.jmh.Main" "-Dexec.cl
 
 - 本项目参考实现了 [995270418L/Tcp_Over_websockets](https://github.com/995270418L/Tcp_Over_websockets)（Public，无独立 LICENSE 声明）的 Netty TCP/WebSocket 编解码思想，并在此基础上重构为 client/server 隧道模式、按目标地址转发、适配 Windows/Linux 原生传输层（NIO/Epoll）。
 
+## 变更记录
+
+### 2026-08-28：共享 EventLoopGroup（线程资源治理）
+
+- **改动**：隧道链路中 `WebsocketClient` / `TcpClient` 原本每次建连 `new NioEventLoopGroup()` 且从不 `shutdown()`，叠加 `TcpServerHandler` / `WebsocketServerHandler` 各 `newFixedThreadPool(32)`，导致**每连接线程数随连接数线性爆炸且不回收**。现改为全局共享一组 `NioEventLoopGroup`（1 个 boss + CPU×2 worker），由引用计数（`AtomicInteger` 持有方）统一在最后一个连接关闭时 `shutdownGracefully()`。
+- **效果**：
+  - 消除线程泄漏，线程数从「随连接爆炸」收敛为「固定一组」；
+  - 端到端吞吐 / RTT 与优化前基线**持平、无回归**（实测 copied 策略 1KB~4MB 全包大小稳定跑完，小包 RTT 抖动在 run-to-run 正常范围内）。
+- **说明**：本改动为资源治理性质，不消除 4 跳跨 EventLoop 调度的固有延迟，因此小包延迟不会系统性改善；吞吐收益来自消除线程爆炸后的系统稳定性，而非批量/零拷贝层面的优化。
+
 ## License
 
 [MIT](LICENSE)（参考来源项目保留其原始版权与协议）。

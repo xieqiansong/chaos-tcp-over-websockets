@@ -14,10 +14,7 @@ import lan.chaos.modules.tcp.over.websockets.client.TcpServer;
 import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
 
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -138,7 +135,7 @@ public class TunnelRealWorldBenchmarkTest {
         String ts = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
         boolean firstWrite = !f.exists() || f.length() == 0;
         try (BufferedWriter w = new BufferedWriter(
-                new FileWriter(f, StandardCharsets.UTF_8, true))) {
+                new OutputStreamWriter(new FileOutputStream(f, true), StandardCharsets.UTF_8))) {
             if (firstWrite) {
                 w.write(RESULTS_HEADER);
                 w.newLine();

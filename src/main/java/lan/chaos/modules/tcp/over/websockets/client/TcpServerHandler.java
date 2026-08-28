@@ -55,13 +55,21 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         String channelId = ctx.channel().id().asLongText();
-        websocketClientMap.remove(channelId);
+        WebsocketClient wc = websocketClientMap.remove(channelId);
+        if (wc != null) {
+            wc.close(); // 释放共享 group 引用计数
+        }
         ctx.channel().close();
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("tcp server 遇到异常: " + cause);
+        String channelId = ctx.channel().id().asLongText();
+        WebsocketClient wc = websocketClientMap.remove(channelId);
+        if (wc != null) {
+            wc.close(); // 释放共享 group 引用计数
+        }
         ctx.close();
     }
 }

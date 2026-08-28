@@ -72,7 +72,9 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
         } else {
             assert msg instanceof WebSocketFrame;
             WebSocketFrame frame = (WebSocketFrame) msg;
-            log.debug("websocket server 响应数据: " + ByteBufUtil.hexDump(frame.content()));
+            if(log.isDebugEnabled()){
+                log.debug("websocket server 响应数据: " + ByteBufUtil.hexDump(frame.content()));
+            }
             if (frame instanceof CloseWebSocketFrame) {
                 log.debug("websocket 关闭请求");
                 channel.close();

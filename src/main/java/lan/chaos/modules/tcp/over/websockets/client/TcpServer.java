@@ -8,6 +8,7 @@ import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import lan.chaos.modules.tcp.over.websockets.SharedEventLoopGroups;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -23,12 +24,11 @@ import java.util.concurrent.locks.ReentrantLock;
 @Profile("client")
 public class TcpServer implements Closeable {
     private final BufCopyStrategy bufCopyStrategy;
-    private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
-    private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
     public TcpServer(BufCopyStrategy bufCopyStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        SharedEventLoopGroups.acquire(); // 共享 boss/worker group，引用计数 +1
     }
 
 
@@ -37,7 +37,7 @@ public class TcpServer implements Closeable {
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
 
-            bootstrap.group(bossGroup, workGroup)
+            bootstrap.group(SharedEventLoopGroups.boss(), SharedEventLoopGroups.worker())
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
                     // 默认 AdaptiveRecvByteBufAllocator 上限 64KB 会把大 TCP 数据块切成多个 64KB 块转发，
                     // 这里把上限调大到 8MB，与 WS 帧上限(8MB)匹配，减少转发/flush 次数（每包固定开销）
@@ -74,11 +74,7 @@ public class TcpServer implements Closeable {
     public void close() {
         lock.lock();
         try {
-            if (bossGroup.isShutdown() && workGroup.isShutdown()) {
-                return;
-            }
-            bossGroup.shutdownGracefully();
-            workGroup.shutdownGracefully();
+            SharedEventLoopGroups.release(); // 共享 group，引用计数 -1，归零才真正关闭
         } finally {
             lock.unlock();
         }

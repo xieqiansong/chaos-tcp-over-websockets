@@ -10,6 +10,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
+import lan.chaos.modules.tcp.over.websockets.SharedEventLoopGroups;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -25,12 +26,11 @@ import java.util.concurrent.locks.ReentrantLock;
 @Profile("server")
 public class WebsocketServer implements Closeable {
     private final BufCopyStrategy bufCopyStrategy;
-    private final EventLoopGroup bossGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
-    private final EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
     private final Lock lock = new ReentrantLock();
 
     public WebsocketServer(BufCopyStrategy bufCopyStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        SharedEventLoopGroups.acquire(); // 共享 boss/worker group，引用计数 +1
     }
 
 
@@ -38,7 +38,7 @@ public class WebsocketServer implements Closeable {
         log.info("Websocket Server start......");
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
-            bootstrap.group(bossGroup, workGroup)
+            bootstrap.group(SharedEventLoopGroups.boss(), SharedEventLoopGroups.worker())
                     .option(ChannelOption.SO_REUSEADDR, true)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
                     .childHandler(new ChannelInitializer<SocketChannel>() {
@@ -70,11 +70,7 @@ public class WebsocketServer implements Closeable {
     public void close() {
         lock.lock();
         try {
-            if (bossGroup.isShutdown() && workGroup.isShutdown()) {
-                return;
-            }
-            bossGroup.shutdownGracefully();
-            workGroup.shutdownGracefully();
+            SharedEventLoopGroups.release(); // 共享 group，引用计数 -1，归零才真正关闭
         } finally {
             lock.unlock();
         }

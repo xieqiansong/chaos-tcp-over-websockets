@@ -4,9 +4,7 @@ import cn.hutool.system.SystemUtil;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
-import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
@@ -16,6 +14,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import lan.chaos.modules.tcp.over.websockets.SharedEventLoopGroups;
 import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
 import lombok.extern.slf4j.Slf4j;
 
@@ -29,21 +28,22 @@ public class WebsocketClient {
 
     public WebsocketClient(String wsUrl, final Channel tcpChannel, BufCopyStrategy bufCopyStrategy) {
         this.bufCopyStrategy = bufCopyStrategy;
+        SharedEventLoopGroups.acquire(); // 共享 worker group，引用计数 +1
         log.debug("websocket client conn start. wsUrl:{}", wsUrl);
-        EventLoopGroup workGroup = SystemUtil.getOsInfo().isWindows() ? new NioEventLoopGroup() : new EpollEventLoopGroup();
         Bootstrap bootstrap = new Bootstrap();
         Bootstrap ignored = SystemUtil.getOsInfo().isWindows() ? bootstrap.channel(NioSocketChannel.class) : bootstrap.channel(EpollSocketChannel.class);
         URI uri;
         try {
             uri = new URI(wsUrl);
         } catch (URISyntaxException e) {
+            SharedEventLoopGroups.release();
             throw new RuntimeException(e);
         }
         // maxFramePayloadLength 默认 64KB，调大到 8MB 以支持大帧、减少大包被切成小帧的固定开销（与 server 端一致）
         final WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
                 uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders(), 8 * 1024 * 1024);
         final WebsocketClientHandler wch = new WebsocketClientHandler(tcpChannel, bufCopyStrategy);
-        bootstrap.group(workGroup)
+        bootstrap.group(SharedEventLoopGroups.worker())
                 .option(ChannelOption.SO_KEEPALIVE, true)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 3000)
                 .handler(new ChannelInitializer<SocketChannel>() {
@@ -76,6 +76,13 @@ public class WebsocketClient {
                 log.debug("写入消息失败, " + channelFuture.cause().getMessage());
             }
         });
+    }
+
+    public void close() {
+        SharedEventLoopGroups.release(); // 共享 group，引用计数 -1，归零才真正关闭
+        if (this.channel != null) {
+            this.channel.close();
+        }
     }
 
     // 原 run() 仅做 channel.closeFuture().sync() 阻塞驻留以保活连接引用。
