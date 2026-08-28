@@ -22,12 +22,16 @@ public class TcpClientHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
-        log.debug("tcp client channel active " + ctx.channel().id().asLongText());
+        if (log.isDebugEnabled()) {
+            log.debug("tcp client channel active " + ctx.channel().id().asLongText());
+        }
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        log.debug("TCP client 收到服务器响应..." + ctx.channel().id().asLongText());
+        if (log.isDebugEnabled()) {
+            log.debug("TCP client 收到服务器响应..." + ctx.channel().id().asLongText());
+        }
         ByteBuf buf = (ByteBuf) msg;
         if (log.isDebugEnabled()) {
             log.debug("TCP client 服务端响应的数据是:" + ByteBufUtil.hexDump(buf));

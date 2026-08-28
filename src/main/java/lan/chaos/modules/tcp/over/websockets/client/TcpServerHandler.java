@@ -26,8 +26,10 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
         String channelId = ctx.channel().id().asLongText();
-        log.debug("tcp server active ....." + channelId);
-        log.debug("tcp 客户端开始和 websocket 服务端建立连接, " + channelId);
+        if (log.isDebugEnabled()) {
+            log.debug("tcp server active ....." + channelId);
+            log.debug("tcp 客户端开始和 websocket 服务端建立连接, " + channelId);
+        }
         // WebsocketClient 构造时已同步完成 connect + 握手，无需外部线程池执行 run() 保活
         WebsocketClient websocketClient = new WebsocketClient(wsUrl, ctx.channel(), bufCopyStrategy);
         websocketClientMap.put(channelId, websocketClient);
@@ -37,9 +39,13 @@ public class TcpServerHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         String channelId = ctx.channel().id().asLongText();
-        log.debug("客户端请求到了..." + channelId);
+        if (log.isDebugEnabled()) {
+            log.debug("客户端请求到了..." + channelId);
+        }
         ByteBuf buf = (ByteBuf) msg;
-        log.debug("TCP server 收到的数据是:" + ByteBufUtil.hexDump(buf));
+        if (log.isDebugEnabled()) {
+            log.debug("TCP server 收到的数据是:" + ByteBufUtil.hexDump(buf));
+        }
         log.debug("开始转发tcp消息到websocket");
         WebsocketClient websocketClient = websocketClientMap.get(channelId);
         if (websocketClient != null) {

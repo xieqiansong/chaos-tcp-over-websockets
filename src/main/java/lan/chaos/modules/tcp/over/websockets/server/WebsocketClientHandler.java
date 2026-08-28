@@ -47,10 +47,14 @@ public class WebsocketClientHandler extends SimpleChannelInboundHandler<Object> 
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
-        log.debug("收到消息, 判断 websocket 是否握手完毕: " + this.handshaker.isHandshakeComplete());
+        if (log.isDebugEnabled()) {
+            log.debug("收到消息, 判断 websocket 是否握手完毕: " + this.handshaker.isHandshakeComplete());
+        }
         if (msg instanceof ByteBuf) {
             ByteBuf buf = (ByteBuf) msg;
-            log.debug("websocket is bytebuf msg: " + ByteBufUtil.hexDump(buf));
+            if (log.isDebugEnabled()) {
+                log.debug("websocket is bytebuf msg: " + ByteBufUtil.hexDump(buf));
+            }
         }
         Channel channel = ctx.channel();
         FullHttpResponse response;

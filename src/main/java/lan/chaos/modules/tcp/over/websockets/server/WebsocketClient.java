@@ -73,7 +73,9 @@ public class WebsocketClient {
             if (channelFuture.isSuccess()) {
                 log.debug("写入消息成功");
             } else {
-                log.debug("写入消息失败, " + channelFuture.cause().getMessage());
+                if (log.isDebugEnabled()) {
+                    log.debug("写入消息失败, " + channelFuture.cause().getMessage());
+                }
             }
         });
     }

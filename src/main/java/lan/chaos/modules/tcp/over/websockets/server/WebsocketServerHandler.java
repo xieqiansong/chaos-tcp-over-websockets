@@ -38,7 +38,9 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
         String channelId = ctx.channel().id().asLongText();
-        log.debug("websocket 断开连接: " + channelId);
+        if (log.isDebugEnabled()) {
+            log.debug("websocket 断开连接: " + channelId);
+        }
         TcpClient tcpClient = tcpClientMap.remove(channelId);
         if (tcpClient != null && !tcpClient.isClose()) {
             tcpClient.close();
@@ -52,13 +54,17 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
             handleHttpMsg(ctx, (FullHttpRequest) msg);
         } else if (msg instanceof WebSocketFrame) {
             WebSocketFrame webSocketFrame = (WebSocketFrame) msg;
-            log.debug("收到简单的客户端消息 channel id: " + ctx.channel().id().asLongText());
+            if (log.isDebugEnabled()) {
+                log.debug("收到简单的客户端消息 channel id: " + ctx.channel().id().asLongText());
+            }
             handlerWebSocketFrame(ctx, webSocketFrame);
         }
     }
 
     private void handlerWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame webSocketFrame) {
-        log.debug("websocket 收到消息：" + webSocketFrame.toString());
+        if (log.isDebugEnabled()) {
+            log.debug("websocket 收到消息：" + webSocketFrame.toString());
+        }
         if (webSocketFrame instanceof CloseWebSocketFrame) {
             log.debug("关闭请求");
             handshaker.close(ctx.channel(), ((CloseWebSocketFrame) webSocketFrame).retain());
@@ -72,7 +78,9 @@ public class WebsocketServerHandler extends SimpleChannelInboundHandler<Object> 
         if (webSocketFrame instanceof TextWebSocketFrame) {
             // 字符串类型消息处理
             String responseMsg = ((TextWebSocketFrame) webSocketFrame).text();
-            log.debug("文本消息 " + responseMsg);
+            if (log.isDebugEnabled()) {
+                log.debug("文本消息 " + responseMsg);
+            }
             String channelId = ctx.channel().id().asLongText();
             TcpClient tcpClient = tcpClientMap.get(channelId);
             if (tcpClient != null) {
