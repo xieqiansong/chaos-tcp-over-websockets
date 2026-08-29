@@ -36,9 +36,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TunnelRealWorldBenchmarkTest {
 
-    // ---- 单次组合控制：通过 -Dbench.strategy / -Dbench.payload 指定，默认只测 copied + 1KB ----
-    private static final String STRATEGY = System.getProperty("bench.strategy", "copied");
-    private static final int PAYLOAD = Integer.getInteger("bench.payload", 1024);
 
     // ---- 标准格式结果输出文件（CSV，追加）。默认写 target/bench-results.log（构建输出目录，gitignore 忽略）----
     private static final String RESULTS_FILE = System.getProperty(
@@ -49,8 +46,10 @@ public class TunnelRealWorldBenchmarkTest {
 
     private static final int ECHO_PORT = 20001;     // echo 后端
 
+    // ---- 单次组合控制：通过 -Dbench.strategy / -Dbench.payload 指定，默认只测 copied + 1KB ----
+    private static final int PAYLOAD = Integer.getInteger("bench.payload", 1024);
     // ---- 打流参数 ----
-    private static final int CONN = 1;                 // 并发打流连接数
+    private static final int CONN = Integer.getInteger("bench.conn", 4);
     private static final int PER_CONN_MB = 16;          // 每连接打流 MB 总量
 
     private static final int LOCAL_PORT_V1 = 21001;    // 隧道 client-v1 入口

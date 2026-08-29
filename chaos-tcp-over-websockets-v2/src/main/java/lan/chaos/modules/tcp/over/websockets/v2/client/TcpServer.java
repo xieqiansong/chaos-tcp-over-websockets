@@ -62,9 +62,10 @@ public class TcpServer {
 
     public static void main(String[] args) {
         String wsUrl = args.length > 0 ? args[0] : "ws://localhost:7002";
+        int poolSize = args.length > 1 ? Integer.parseInt(args[1]) : Client.DEFAULT_POOL_SIZE;
 
         Client client = new Client();
-        client.connect(wsUrl);
+        client.connect(wsUrl, poolSize);
 
         TcpServer tcpServer = new TcpServer(client);
         // 阻塞监听本地端口

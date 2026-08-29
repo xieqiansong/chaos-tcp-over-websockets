@@ -50,6 +50,7 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         log.info("v2 Client WebSocket 断开: {}", ctx.channel().id().asShortText());
+        client.onWsClosed(ctx.channel());
     }
 
     @Override
@@ -72,7 +73,7 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
 
         WebSocketFrame frame = (WebSocketFrame) msg;
         if (frame instanceof TextWebSocketFrame) {
-            handleTextFrame(((TextWebSocketFrame) frame).text());
+            handleTextFrame(ctx, ((TextWebSocketFrame) frame).text());
         } else if (frame instanceof BinaryWebSocketFrame) {
             handleDataFrame((BinaryWebSocketFrame) frame);
         } else if (frame instanceof PingWebSocketFrame) {
@@ -82,14 +83,14 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
         }
     }
 
-    private void handleTextFrame(String text) {
+    private void handleTextFrame(ChannelHandlerContext ctx, String text) {
         ControlMessage msg = ControlMessageCodec.decode(text);
         if (msg == null) {
             log.info("v2 Client 收到普通文本: {}", text);
             return;
         }
         if ("opened".equals(msg.getType())) {
-            client.onSessionOpened(msg.getSessionId(), msg.getRequestId());
+            client.onSessionOpened(ctx.channel(), msg.getSessionId(), msg.getRequestId());
         } else if ("openFailed".equals(msg.getType())) {
             client.onSessionOpenFailed(msg.getRequestId());
         } else if ("close".equals(msg.getType())) {
