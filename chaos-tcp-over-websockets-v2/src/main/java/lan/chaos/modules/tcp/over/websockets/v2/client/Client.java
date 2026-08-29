@@ -26,7 +26,9 @@ import lombok.extern.slf4j.Slf4j;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -49,6 +51,12 @@ public class Client {
 
     /** requestId -> 本地 TCP 通道（open 发出后等待 opened 回填）。 */
     private final Map<String, Channel> pendingByRequestId = new ConcurrentHashMap<>();
+
+    /**
+     * 本地 TCP 会话尚未 opened 前，暂存本地 TCP 收到的数据 payload。
+     * key 存在即表示"仍在等待/flush 缓冲"，后续到达的数据继续入队以保证有序。
+     */
+    private final Map<Channel, Queue<ByteBuf>> pendingWrites = new ConcurrentHashMap<>();
 
     private final AtomicLong requestIdSeq = new AtomicLong(0);
 
@@ -115,7 +123,7 @@ public class Client {
     }
 
     /**
-     * opened 消息回填：按 requestId 找到本地 TCP 通道，建立双向映射。
+     * opened 消息回填：按 requestId 找到本地 TCP 通道，建立双向映射，并 flush 缓冲的数据。
      */
     public void onSessionOpened(long sessionId, String requestId) {
         Channel tcpChannel = pendingByRequestId.remove(requestId);
@@ -126,15 +134,45 @@ public class Client {
         tcpChannelToSession.put(tcpChannel, sessionId);
         sessionToTcpChannel.put(sessionId, tcpChannel);
         log.info("v2 Client 会话映射建立: sessionId={} <-> tcp={}", sessionId, tcpChannel.id().asShortText());
+
+        // flush 建立会话前缓存的数据。交给本地 TCP 通道的 eventLoop 执行，
+        // 与后续 sendData 在同一条线程上序列化，保证顺序；key 在 flush 完成后才移除，
+        // 使 flush 窗口内新到达的数据仍入同一队列而不乱序。
+        Queue<ByteBuf> q = pendingWrites.get(tcpChannel);
+        if (q != null) {
+            final Channel wsChannel = channel;
+            final Queue<ByteBuf> queue = q;
+            tcpChannel.eventLoop().execute(() -> {
+                ByteBuf buf;
+                while ((buf = queue.poll()) != null) {
+                    if (wsChannel != null && wsChannel.isActive()) {
+                        ByteBuf frame = DataFrameCodec.encode(sessionId, buf);
+                        wsChannel.writeAndFlush(new BinaryWebSocketFrame(frame));
+                    }
+                    buf.release();
+                }
+                pendingWrites.remove(tcpChannel);
+            });
+        }
     }
 
     /**
      * 本地 TCP 收到数据时，打包成数据帧发送给 server。
+     * <p>
+     * 会话尚未 opened（或仍在 flush 缓冲期间）时，先暂存数据，待 {@link #onSessionOpened} 回调后再统一发送，
+     * 避免首包在 open→opened 往返完成前被静默丢弃（这正是之前不加 Thread.sleep 就卡死的根因）。
      */
     public void sendData(Channel tcpChannel, ByteBuf payload) {
+        if (channel == null || !channel.isActive()) {
+            log.warn("v2 Client 无法发送数据：WS 断开");
+            return;
+        }
         Long sessionId = tcpChannelToSession.get(tcpChannel);
-        if (sessionId == null || channel == null || !channel.isActive()) {
-            log.warn("v2 Client 无法发送数据：会话未建立或 WS 断开");
+        // 会话未就绪或仍在 flush 缓冲窗口内：入队等待，保持顺序
+        if (sessionId == null || pendingWrites.containsKey(tcpChannel)) {
+            Queue<ByteBuf> q = pendingWrites.computeIfAbsent(
+                    tcpChannel, k -> new ConcurrentLinkedQueue<>());
+            q.add(payload.retainedDuplicate());
             return;
         }
         ByteBuf frame = DataFrameCodec.encode(sessionId, payload);
@@ -161,6 +199,14 @@ public class Client {
             log.info("v2 Client 本地 TCP 断开，清理会话映射 sessionId={}", sessionId);
             ControlMessage close = ControlMessage.close(sessionId);
             sendText(ControlMessageCodec.encode(close));
+        }
+        // 释放尚未 flush 的缓冲数据，避免内存泄漏
+        Queue<ByteBuf> q = pendingWrites.remove(tcpChannel);
+        if (q != null) {
+            ByteBuf buf;
+            while ((buf = q.poll()) != null) {
+                buf.release();
+            }
         }
     }
 

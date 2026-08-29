@@ -48,8 +48,8 @@ public class TunnelRealWorldBenchmarkTest {
                     + "directMbPerSec,directRttMs,directReceived,directError";
 
     // ---- 打流参数 ----
-    private static final int CONN = 1;                 // 并发打流连接数
-    private static final int PER_CONN_MB = 1;          // 每连接打流 MB 总量
+    private static final int CONN = 2;                 // 并发打流连接数
+    private static final int PER_CONN_MB = 16;          // 每连接打流 MB 总量
     private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限
 
     // 端口分配：单次运行只起一个隧道，端口固定即可（避免与其它组合冲突）；直连对照端口独立
@@ -173,8 +173,8 @@ public class TunnelRealWorldBenchmarkTest {
         int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload;
         long expected = (long) CONN * roundsPerConn * payload;
         AtomicLong total = new AtomicLong(0);
-        AtomicLong first = new AtomicLong(0);
-        AtomicLong last = new AtomicLong(0);
+        AtomicLong rttSum = new AtomicLong(0);     // 累计每轮 RTT（纳秒）
+        AtomicLong rttCount = new AtomicLong(0);   // 累计轮数
         CountDownLatch done = new CountDownLatch(CONN);
         byte[] pl = new byte[payload];
         for (int i = 0; i < pl.length; i++) {
@@ -189,18 +189,19 @@ public class TunnelRealWorldBenchmarkTest {
                     InputStream in = s.getInputStream();
                     byte[] rbuf = new byte[8192];
                     for (int i = 0; i < roundsPerConn; i++) {
+                        long roundStart = System.nanoTime();
                         out.write(pl);
                         // 边写边读回包，避免发送端 TCP 缓冲阻塞
                         int need = payload;
                         while (need > 0) {
                             int n = in.read(rbuf);
                             if (n < 0) break;
-                            long t = System.nanoTime();
-                            if (first.get() == 0) first.set(t);
-                            last.set(t);
                             total.addAndGet(n);
                             need -= n;
                         }
+                        // 单轮 RTT = 发出到回包完整收齐的耗时
+                        rttSum.addAndGet(System.nanoTime() - roundStart);
+                        rttCount.incrementAndGet();
                     }
                 } catch (Exception e) {
                     r.error = "连接异常: " + e.getClass().getSimpleName();
@@ -221,7 +222,7 @@ public class TunnelRealWorldBenchmarkTest {
         r.receivedBytes = total.get();
         double mb = r.receivedBytes / 1024.0 / 1024.0;
         r.mbPerSec = elapsedMs > 0 ? mb * 1000 / elapsedMs : 0;
-        r.rttMs = (last.get() - first.get()) / 1_000_000;
+        r.rttMs = rttCount.get() > 0 ? (rttSum.get() / rttCount.get()) / 1_000_000 : 0;
         if (r.error == null && r.receivedBytes < expected * 0.99) {
             r.error = "链路异常：仅回收 " + r.receivedBytes + "/" + expected + " 字节";
         }
