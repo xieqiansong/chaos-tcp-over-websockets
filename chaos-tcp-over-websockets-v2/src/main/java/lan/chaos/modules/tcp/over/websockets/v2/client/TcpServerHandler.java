@@ -16,16 +16,20 @@ import lombok.extern.slf4j.Slf4j;
 public class TcpServerHandler extends ChannelInboundHandlerAdapter {
 
     private final Client client;
+    private final String targetHost;
+    private final Integer targetPort;
 
-    public TcpServerHandler(Client client) {
+    public TcpServerHandler(Client client, String targetHost, Integer targetPort) {
         this.client = client;
+        this.targetHost = targetHost;
+        this.targetPort = targetPort;
     }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
         log.info("v2 本地 TCP 连接进来: {}", ctx.channel().id().asShortText());
         // 目标地址先占位；实际应从配置/参数获取
-        client.openSession("127.0.0.1", 30100, ctx.channel());
+        client.openSession(targetHost, targetPort, ctx.channel());
     }
 
     @Override

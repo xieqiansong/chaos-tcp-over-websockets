@@ -22,12 +22,6 @@
     </properties>
 
     <dependencies>
-        <!-- 依赖隧道实现本身：微基准对拍 bufcopy 策略，端到端压测直接起 v1 的 client/server -->
-        <dependency>
-            <groupId>lan.chaos</groupId>
-            <artifactId>chaos-tcp-over-websockets-v1</artifactId>
-            <version>${project.version}</version>
-        </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-all</artifactId>
@@ -52,6 +46,10 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
     </dependencies>
 

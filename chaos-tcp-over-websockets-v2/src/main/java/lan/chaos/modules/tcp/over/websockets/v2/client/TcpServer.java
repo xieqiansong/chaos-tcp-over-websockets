@@ -28,7 +28,7 @@ public class TcpServer {
         SharedEventLoopGroups.acquire(); // 共享 boss/worker group，引用计数 +1
     }
 
-    public void start(int port) {
+    public void start(int port, String targetHost, int targetPort) {
         log.info("v2 TcpServer start, port={}", port);
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
@@ -41,7 +41,7 @@ public class TcpServer {
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         protected void initChannel(SocketChannel ch) {
-                            ch.pipeline().addLast(new TcpServerHandler(client));
+                            ch.pipeline().addLast(new TcpServerHandler(client, targetHost, targetPort));
                         }
                     });
 
@@ -62,13 +62,12 @@ public class TcpServer {
 
     public static void main(String[] args) {
         String wsUrl = args.length > 0 ? args[0] : "ws://localhost:7002";
-        int localPort = args.length > 1 ? Integer.parseInt(args[1]) : 13306;
 
         Client client = new Client();
         client.connect(wsUrl);
 
         TcpServer tcpServer = new TcpServer(client);
         // 阻塞监听本地端口
-        tcpServer.start(localPort);
+        tcpServer.start(21001, "127.0.0.1", 20001);
     }
 }

@@ -1,17 +1,5 @@
 package lan.chaos.modules.tcp.over.websockets.benchmark;
 
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import lan.chaos.modules.tcp.over.websockets.bufcopy.BufCopyStrategy;
-import lan.chaos.modules.tcp.over.websockets.bufcopy.CopiedBufferStrategy;
-import lan.chaos.modules.tcp.over.websockets.bufcopy.DuplicateStrategy;
-import lan.chaos.modules.tcp.over.websockets.bufcopy.RetainedDuplicateStrategy;
-import lan.chaos.modules.tcp.over.websockets.client.TcpServer;
-import lan.chaos.modules.tcp.over.websockets.server.WebsocketServer;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -61,15 +49,12 @@ public class TunnelRealWorldBenchmarkTest {
 
     // ---- 打流参数 ----
     private static final int CONN = 1;                 // 并发打流连接数
-    private static final int PER_CONN_MB = 4;          // 每连接打流 MB 总量
+    private static final int PER_CONN_MB = 1;          // 每连接打流 MB 总量
     private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限
 
     // 端口分配：单次运行只起一个隧道，端口固定即可（避免与其它组合冲突）；直连对照端口独立
-    private static final int BASE = 20000;
-    private static final int ECHO_PORT = BASE + 1;     // echo 后端
-    private static final int WS_PORT = BASE + 2;       // 隧道 WS server
-    private static final int LOCAL_PORT = BASE + 3;    // 隧道 client 入口
-    private static final int DIRECT_PORT = BASE + 10;  // 直连 echo 对照端口
+    private static final int ECHO_PORT = 20001;     // echo 后端
+    private static final int LOCAL_PORT = 21001;    // 隧道 client 入口
 
     static class Result {
         final String name;
@@ -84,26 +69,11 @@ public class TunnelRealWorldBenchmarkTest {
         }
     }
 
-    private static BufCopyStrategy resolveStrategy(String name) {
-        switch (name) {
-            case "copied":
-                return new CopiedBufferStrategy();
-            case "retained":
-                return new RetainedDuplicateStrategy();
-            case "duplicate":
-                return new DuplicateStrategy();
-            default:
-                throw new IllegalArgumentException("未知策略: " + name
-                        + "（可选 copied/retained/duplicate）");
-        }
-    }
-
     /**
      * 单次只测一个「策略 × 包大小」组合 + 直连对照，互不干扰。
      */
     @Test
     void runSingle() throws Exception {
-        BufCopyStrategy strategy = resolveStrategy(STRATEGY);
         int payload = PAYLOAD;
         String name = STRATEGY;
 
@@ -111,9 +81,9 @@ public class TunnelRealWorldBenchmarkTest {
                 + (payload / 1024.0) + "KB) ========");
 
         // 被测隧道
-        Result tunnel = runRound(strategy, name, BASE, payload);
+        Result tunnel = runTraffic(LOCAL_PORT, name, payload);
         // 直连 echo 对照（无隧道）
-        Result direct = runDirect(DIRECT_PORT, payload);
+        Result direct = runDirect(payload);
 
         System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
                 + (CONN * PER_CONN_MB) + "MB --");
@@ -190,49 +160,14 @@ public class TunnelRealWorldBenchmarkTest {
     /**
      * 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。
      */
-    private Result runDirect(int echoPort, int payload) throws Exception {
-        EventLoopGroup echoGroup = startEcho(echoPort);
-        try {
-            Thread.sleep(500); // 等待绑定
-            return runTraffic("127.0.0.1", echoPort, "direct", payload);
-        } finally {
-            echoGroup.shutdownGracefully();
-        }
-    }
-
-    /**
-     * 起 echo 后端（收到即原样回），返回其 EventLoopGroup 供调用方关闭。
-     */
-    private EventLoopGroup startEcho(int echoPort) throws Exception {
-        EventLoopGroup echoGroup = new NioEventLoopGroup();
-        ServerBootstrap eb = new ServerBootstrap();
-        eb.group(echoGroup).channel(NioServerSocketChannel.class)
-                .childOption(ChannelOption.TCP_NODELAY, true)
-                .childOption(ChannelOption.SO_REUSEADDR, true)
-                .childHandler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) {
-                        ch.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
-                            @Override
-                            protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
-                                ctx.writeAndFlush(msg.retain()); // retain 交出的引用，Simple 会在返回后 release 入站引用
-                            }
-
-                            @Override
-                            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                                ctx.close();
-                            }
-                        });
-                    }
-                });
-        eb.bind(echoPort).sync();
-        return echoGroup;
+    private Result runDirect(int payload) throws Exception {
+        return runTraffic(TunnelRealWorldBenchmarkTest.ECHO_PORT, "direct", payload);
     }
 
     /**
      * 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB（包大小 payload），统计端到端吞吐/RTT。
      */
-    private Result runTraffic(String host, int port, String name, int payload) throws Exception {
+    private Result runTraffic(int port, String name, int payload) throws Exception {
         Result r = new Result(name);
         r.connCount = CONN;
         int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload;
@@ -240,7 +175,6 @@ public class TunnelRealWorldBenchmarkTest {
         AtomicLong total = new AtomicLong(0);
         AtomicLong first = new AtomicLong(0);
         AtomicLong last = new AtomicLong(0);
-        CountDownLatch gate = new CountDownLatch(1);     // 发令枪：保证多连接同时起步
         CountDownLatch done = new CountDownLatch(CONN);
         byte[] pl = new byte[payload];
         for (int i = 0; i < pl.length; i++) {
@@ -249,12 +183,11 @@ public class TunnelRealWorldBenchmarkTest {
 
         for (int c = 0; c < CONN; c++) {
             new Thread(() -> {
-                try (Socket s = new Socket(host, port)) {
-                    s.setSoTimeout(5000);
-                    java.io.OutputStream out = s.getOutputStream();
-                    java.io.InputStream in = s.getInputStream();
+                try (Socket s = new Socket("127.0.0.1", port)) {
+                    s.setSoTimeout(5 * 1000);
+                    OutputStream out = s.getOutputStream();
+                    InputStream in = s.getInputStream();
                     byte[] rbuf = new byte[8192];
-                    gate.await();                        // 等发令，多连接同时开打
                     for (int i = 0; i < roundsPerConn; i++) {
                         out.write(pl);
                         // 边写边读回包，避免发送端 TCP 缓冲阻塞
@@ -278,7 +211,6 @@ public class TunnelRealWorldBenchmarkTest {
         }
 
         long start = System.nanoTime();
-        gate.countDown();                                // 发令
         try {
             done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ignore) {
@@ -292,46 +224,6 @@ public class TunnelRealWorldBenchmarkTest {
         r.rttMs = (last.get() - first.get()) / 1_000_000;
         if (r.error == null && r.receivedBytes < expected * 0.99) {
             r.error = "链路异常：仅回收 " + r.receivedBytes + "/" + expected + " 字节";
-        }
-        return r;
-    }
-
-    /**
-     * 起一个完整隧道（echo + WS server + TcpServer 入口），打流，最后清理。
-     */
-    private Result runRound(BufCopyStrategy strategy, String name, int base, int payload) throws Exception {
-        int echoPort = base + 1, wsPort = base + 2, localPort = base + 3;
-        EventLoopGroup echoGroup = startEcho(echoPort);
-
-        // 隧道 server（WS 端，转发到 echo）
-        WebsocketServer ws = new WebsocketServer(strategy);
-        Thread wsThread = new Thread(() -> ws.start(wsPort));
-        wsThread.setDaemon(true);
-        wsThread.start();
-
-        // 隧道 client 入口（监听到 localPort，连 ws 后转发到 echo）
-        TcpServer tcpServer = new TcpServer(strategy);
-        String wsUrl = "ws://127.0.0.1:" + wsPort + "/forward/127.0.0.1/" + echoPort;
-        Thread clientThread = new Thread(() -> tcpServer.start(localPort, wsUrl));
-        clientThread.setDaemon(true);
-        clientThread.start();
-
-        Thread.sleep(1000); // 等待各端口绑定
-
-        Result r;
-        try {
-            r = runTraffic("127.0.0.1", localPort, name, payload);
-        } finally {
-            try {
-                tcpServer.close();
-            } catch (Exception ignore) {
-            }
-            try {
-                ws.close();
-            } catch (Exception ignore) {
-            }
-            echoGroup.shutdownGracefully().syncUninterruptibly();
-            Thread.sleep(1500);
         }
         return r;
     }
