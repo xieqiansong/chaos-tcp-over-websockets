@@ -21,8 +21,8 @@
     <description>基于 Netty 的 TCP over WebSocket 隧道工具（参考 Tcp_Over_websockets 改造的 client/server 模式）</description>
 
     <modules>
-        <module>chaos-tcp-over-websockets-v1</module>
-        <module>chaos-tcp-over-websockets-v2</module>
+        <module>chaos-tcp-over-websockets-simple</module>
+        <module>chaos-tcp-over-websockets-multiplexed</module>
         <module>chaos-tcp-over-websockets-benchmark</module>
     </modules>
 

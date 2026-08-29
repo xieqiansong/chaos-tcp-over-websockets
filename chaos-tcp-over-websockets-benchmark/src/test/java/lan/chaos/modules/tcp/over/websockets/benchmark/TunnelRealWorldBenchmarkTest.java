@@ -52,8 +52,8 @@ public class TunnelRealWorldBenchmarkTest {
     private static final int CONN = Integer.getInteger("bench.conn", 4);
     private static final int PER_CONN_MB = 16;          // 每连接打流 MB 总量
 
-    private static final int LOCAL_PORT_V1 = 21001;    // 隧道 client-v1 入口
-    private static final int LOCAL_PORT_V2 = 21002;    // 隧道 client-v2 入口
+    private static final int LOCAL_PORT_SIMPLE = 21001;       // 隧道 client-simple 入口
+    private static final int LOCAL_PORT_MULTIPLEXED = 21002;   // 隧道 client-multiplexed 入口
 
     static class Result {
         final String name;
@@ -78,19 +78,19 @@ public class TunnelRealWorldBenchmarkTest {
         System.out.println("\n======== 单次组合: 包大小=" + payload + "B (" + (payload / 1024.0) + "KB) ========");
 
         // 被测隧道
-        Result tunnel_v1 = runTraffic(LOCAL_PORT_V1, "tunnel_v1", payload);
-        Result tunnel_v2 = runTraffic(LOCAL_PORT_V2, "tunnel_v2", payload);
+        Result tunnel_simple = runTraffic(LOCAL_PORT_SIMPLE, "tunnel_simple", payload);
+        Result tunnel_multiplexed = runTraffic(LOCAL_PORT_MULTIPLEXED, "tunnel_multiplexed", payload);
         // 直连 echo 对照（无隧道）
         Result direct = runTraffic(TunnelRealWorldBenchmarkTest.ECHO_PORT, "direct", payload);
 
         System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
                 + (CONN * PER_CONN_MB) + "MB --");
-        printResult(tunnel_v1);
-        printResult(tunnel_v2);
+        printResult(tunnel_simple);
+        printResult(tunnel_multiplexed);
         printResult(direct);
 
         // 以标准 CSV 格式追加到结果文件，供程序化解析（不依赖解析控制台输出）
-        appendToResultsFile(tunnel_v1, direct);
+        appendToResultsFile(tunnel_simple, direct);
     }
 
     /**
