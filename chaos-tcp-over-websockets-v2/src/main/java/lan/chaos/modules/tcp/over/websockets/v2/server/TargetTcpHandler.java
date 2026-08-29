@@ -34,7 +34,8 @@ public class TargetTcpHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         ByteBuf buf = (ByteBuf) msg;
         if (wsChannel != null && wsChannel.isActive()) {
-            ByteBuf frame = DataFrameCodec.encode(sessionId, buf);
+            // 零拷贝：payload 逻辑拼接进帧（帧内部已 retain），写完后由帧级联释放
+            ByteBuf frame = DataFrameCodec.encodeZeroCopy(wsChannel.alloc(), sessionId, buf);
             wsChannel.writeAndFlush(new BinaryWebSocketFrame(frame));
         }
         ReferenceCountUtil.release(buf);

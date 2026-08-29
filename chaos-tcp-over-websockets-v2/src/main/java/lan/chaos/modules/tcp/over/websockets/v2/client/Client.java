@@ -233,7 +233,7 @@ public class Client {
                 ByteBuf buf;
                 while ((buf = queue.poll()) != null) {
                     if (wsChannel != null && wsChannel.isActive()) {
-                        ByteBuf frame = DataFrameCodec.encode(sessionId, buf);
+                        ByteBuf frame = DataFrameCodec.encodeZeroCopy(wsChannel.alloc(), sessionId, buf);
                         wsChannel.writeAndFlush(new BinaryWebSocketFrame(frame));
                     }
                     buf.release();
@@ -263,7 +263,7 @@ public class Client {
             log.warn("v2 Client 无法发送数据：WS 断开 sessionId={}", sessionId);
             return;
         }
-        ByteBuf frame = DataFrameCodec.encode(sessionId, payload);
+        ByteBuf frame = DataFrameCodec.encodeZeroCopy(wsChannel.alloc(), sessionId, payload);
         wsChannel.writeAndFlush(new BinaryWebSocketFrame(frame));
     }
 

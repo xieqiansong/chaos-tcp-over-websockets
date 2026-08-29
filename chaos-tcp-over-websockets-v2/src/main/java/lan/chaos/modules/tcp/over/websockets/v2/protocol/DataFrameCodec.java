@@ -1,6 +1,7 @@
 package lan.chaos.modules.tcp.over.websockets.v2.protocol;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 
 /**
@@ -39,6 +40,18 @@ public final class DataFrameCodec {
         buf.writeInt(len);
         buf.writeBytes(payload, payload.readerIndex(), len);
         return buf;
+    }
+
+    /**
+     * 零拷贝版编码：头部由 alloc 分配，payload 通过 CompositeByteBuf 逻辑拼接，不复制数据。
+     * 方法内部会对 payload 做一次 retain，返回的帧持有该引用；调用方可继续自行管理
+     * （释放）原 payload 引用。帧释放时会级联释放 header 与这份 payload 引用。
+     */
+    public static ByteBuf encodeZeroCopy(ByteBufAllocator alloc, long sessionId, ByteBuf payload) {
+        ByteBuf header = alloc.buffer(HEADER_BYTES);
+        header.writeLong(sessionId);
+        header.writeInt(payload.readableBytes());
+        return Unpooled.wrappedBuffer(header, payload.retain());
     }
 
     /**
