@@ -8,18 +8,22 @@ import org.openjdk.jmh.infra.Blackhole;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 隧道转发路径上 ByteBuf 拷贝策略的 JMH 微基准（放在 test 源码，不参与 main 打包）。
+ * 隧道转发路径上 ByteBuf 拷贝策略的 JMH 微基准（位于 benchmark 子模块的 src/main，不参与业务 jar）。
  *
  * 转发逻辑中每次转发都调用 {@code Unpooled.copiedBuffer(src)} 做一次全量拷贝
  * （见 TcpServerHandler / TcpClientHandler / WebsocketServerHandler / WebsocketClientHandler）。
  * 本基准衡量「全量拷贝」与两种「零拷贝」策略(duplicate / retainedDuplicate)在
  * 不同消息尺寸下的吞吐差异，为是否改为零拷贝提供依据。
  *
- * 运行方式（手动）:
- *   mvn test-compile exec:java -Dexec.mainClass=org.openjdk.jmh.Main \
- *       -Dexec.classpathScope=test -Dexec.args="BufCopyStrategyBenchmark -f 0"
+ * 运行方式一（uber jar，推荐，支持 fork 出干净 JVM）：
+ *   mvn -pl chaos-tcp-over-websockets-benchmark -am package -DskipTests
+ *   java -jar chaos-tcp-over-websockets-benchmark/target/benchmarks.jar BufCopyStrategyBenchmark
+ *
+ * 运行方式二（进程内快速验证，免打包）：
+ *   mvn -pl chaos-tcp-over-websockets-benchmark -am compile exec:java \
+ *       -Dexec.mainClass=org.openjdk.jmh.Main -Dexec.args="BufCopyStrategyBenchmark -f 0"
  * 说明: exec 环境下 JMH 子进程 fork 依赖自身 classpath，故以 -f 0 进程内运行；
- *       正式性能数据建议在独立 fork 环境执行完整参数。
+ *       正式性能数据请用方式一，在独立 fork 环境中执行完整参数。
  */
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.SECONDS)

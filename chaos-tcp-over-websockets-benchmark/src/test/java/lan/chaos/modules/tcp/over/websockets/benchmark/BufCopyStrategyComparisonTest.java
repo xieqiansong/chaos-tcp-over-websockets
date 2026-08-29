@@ -17,7 +17,7 @@ import java.util.List;
  * 本测试仅用于快速观察不同策略在不同消息尺寸下的吞吐量级差异，不做 JVM 预热、
  * 不受 GC 干扰控制，数据仅供定性参考。
  *
- * <p>直接复用刚落地的 {@code bufcopy} 包三实现，按 {@code isSafeForForwarding()}
+ * <p>直接复用 v1 模块 {@code bufcopy} 包三实现，按 {@code isSafeForForwarding()}
  * 决定是否在写完端 release——duplicate 共享引用计数，故不在循环内 release，避免提前
  * 释放源 buf（这正是它链路不安全的体现）。
  */

@@ -34,18 +34,7 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
-        <!-- 仅用于 src/test 下 JMH 微基准，不参与 main 打包 -->
-        <dependency>
-            <groupId>org.openjdk.jmh</groupId>
-            <artifactId>jmh-core</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.openjdk.jmh</groupId>
-            <artifactId>jmh-generator-annprocess</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!-- 提供 JUnit 5，支持 IDEA 内直接运行 @Test（含拷贝策略对照测试） -->
+        <!-- 基准已迁移到 chaos-tcp-over-websockets-benchmark 子模块，此处不再引入 JMH -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -73,11 +62,6 @@
                             <artifactId>lombok</artifactId>
                             <version>${lombok.version}</version>
                         </path>
-                        <path>
-                            <groupId>org.openjdk.jmh</groupId>
-                            <artifactId>jmh-generator-annprocess</artifactId>
-                            <version>${jmh.version}</version>
-                        </path>
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
@@ -86,6 +70,9 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <mainClass>lan.chaos.modules.tcp.over.websockets.TcpOverWebsocketsApp</mainClass>
+                    <!-- 可执行 fat jar 使用 exec 分类，保留未被重打包的普通 jar 作为主构件，
+                         供 chaos-tcp-over-websockets-benchmark 等模块直接依赖 -->
+                    <classifier>exec</classifier>
                 </configuration>
                 <executions>
                     <execution>

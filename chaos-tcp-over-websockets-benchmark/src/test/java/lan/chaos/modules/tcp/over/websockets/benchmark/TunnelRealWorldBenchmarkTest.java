@@ -32,14 +32,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * 避免连续跑多种组合时前面轮次的线程/端口/引用计数状态污染后续数据（连续混跑会导致
  * retained 等在 256KB/4MB 大包下偶发崩溃、结果不可复现）。
  * <p>
- * 单次运行示例（命令行）：
+ * 单次运行示例（在仓库根目录执行）：
  * <pre>
  *   # 只测 retained + 256KB
- *   mvn test -Dtest=TunnelRealWorldBenchmarkTest#runSingle \
+ *   mvn -pl chaos-tcp-over-websockets-benchmark -am test \
+ *       -Dtest=TunnelRealWorldBenchmarkTest#runSingle \
  *       -Dbench.strategy=retained -Dbench.payload=262144
  *
  *   # 只测 copied，跑默认包大小（1KB）
- *   mvn test -Dtest=TunnelRealWorldBenchmarkTest#runSingle -Dbench.strategy=copied
+ *   mvn -pl chaos-tcp-over-websockets-benchmark -am test \
+ *       -Dtest=TunnelRealWorldBenchmarkTest#runSingle -Dbench.strategy=copied
  * </pre>
  * <p>
  * 要在多个策略/包大小间对比，请在命令行逐个单跑，不要在一次 JVM 内连续混跑。

@@ -15,10 +15,11 @@
 
 **关键：单次单组合运行 + 每场景 3 次取平均**（避免连续混跑时跨轮状态污染导致不可复现，同时用多次平均抵消单次波动）。
 
-- 测试入口：`TunnelRealWorldBenchmarkTest#runSingle`
+- 测试入口：`TunnelRealWorldBenchmarkTest#runSingle`（现位于 `chaos-tcp-over-websockets-benchmark` 子模块，在仓库根目录执行）
 - 通过系统属性指定单次测什么，结果以**标准 CSV 追加**到 `target/bench-results.log`：
   ```bash
-  mvn test "-Dtest=TunnelRealWorldBenchmarkTest#runSingle" \
+  mvn -pl chaos-tcp-over-websockets-benchmark -am test \
+      "-Dtest=TunnelRealWorldBenchmarkTest#runSingle" \
       -Dbench.strategy=retained -Dbench.payload=262144
   ```
   - `bench.strategy` ∈ {`copied`,`retained`,`duplicate`}

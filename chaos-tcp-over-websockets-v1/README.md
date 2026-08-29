@@ -22,14 +22,14 @@ client 端                           server 端
 ## 用法
 
 ```bash
-# 构建可执行 jar
+# 构建：产出普通 jar（供其他模块依赖）与 -exec 可执行 jar
 mvn clean package
 
 # 1) server 端：监听 WebSocket，供 client 连入
-java -jar target/tcp-over-websockets.jar server 7002
+java -jar target/tcp-over-websockets-exec.jar server 7002
 
 # 2) client 端：本地监听 13306，隧道转发到远端目标 127.0.0.1:3306
-java -jar target/tcp-over-websockets.jar client 13306 ws://server-host:7002/forward/127.0.0.1/3306
+java -jar target/tcp-over-websockets-exec.jar client 13306 ws://server-host:7002/forward/127.0.0.1/3306
 ```
 
 > server 端默认转发地址以 `ws://localhost:7002` 兜底；client 端必须指定完整的 WebSocket 地址。
@@ -74,14 +74,14 @@ server {
 此时 client 端只需指向该前端端口即可：
 
 ```bash
-java -jar target/tcp-over-websockets.jar client 13306 ws://tunnel.example.com/forward/127.0.0.1/3306
+java -jar target/tcp-over-websockets-exec.jar client 13306 ws://tunnel.example.com/forward/127.0.0.1/3306
 ```
 
 > 若企业仅开放 HTTPS（443），在 `server` 块增加 443/SSL 监听，client 端把 `ws://` 换成 `wss://` 即可，其余配置不变。
 
 ## 性能基准（JMH）
 
-隧道转发路径上的核心开销是 `ByteBuf` 的拷贝策略。当前实现每个转发环节都调用 `Unpooled.copiedBuffer(...)` 做一次**全量拷贝**，本仓库在 `benchmark/` 子模块内用 [JMH](https://github.com/openjdk/jmh) 对三种策略做了微基准对拍（单线程、Throughput、ops/s）：
+隧道转发路径上的核心开销是 `ByteBuf` 的拷贝策略。当前实现每个转发环节都调用 `Unpooled.copiedBuffer(...)` 做一次**全量拷贝**，本仓库在 `chaos-tcp-over-websockets-benchmark` 子模块内用 [JMH](https://github.com/openjdk/jmh) 对三种策略做了微基准对拍（单线程、Throughput、ops/s）：
 
 | 策略 | 1KB | 64KB | 1MB |
 |---|---|---|---|
@@ -94,18 +94,23 @@ java -jar target/tcp-over-websockets.jar client 13306 ws://tunnel.example.com/fo
 > 说明：`duplicate` 的 ~170M 含 JVM 编译器逃逸分析/标量替换的假象，且其视图**不持有引用计数**，真实转发中底层 ByteBuf 一旦被 `release()` 即会读写悬空，故**不宜采用**，仅供对比观察；`retainedDuplicate` 会真实递增 refCnt（CAS，JIT 无法消除），数字可信且不随尺寸下降，是迁移零拷贝的推荐策略，同时需在写端配合 `release()` 做好生命周期管理。
 
 ```bash
-# 运行基准（基准类位于 src/test，JMH 依赖为 test scope）
-mvn -q test-compile exec:java "-Dexec.mainClass=org.openjdk.jmh.Main" "-Dexec.classpathScope=test" "-Dexec.args=BufCopyStrategyBenchmark -f 0 -r 1"
+# 方式一（推荐）：在仓库根目录打包 uber jar 后运行，JMH 可正常 fork 出干净 JVM
+mvn -pl chaos-tcp-over-websockets-benchmark -am package -DskipTests
+java -jar chaos-tcp-over-websockets-benchmark/target/benchmarks.jar BufCopyStrategyBenchmark
+
+# 方式二：免打包，进程内快速验证
+mvn -pl chaos-tcp-over-websockets-benchmark -am compile exec:java \
+    "-Dexec.mainClass=org.openjdk.jmh.Main" "-Dexec.args=BufCopyStrategyBenchmark -f 0"
 ```
 
-> 说明：`benchmark/` 目录已迁移为标准 Maven 推荐的 `src/test/java`，JMH 依赖与注解处理器均声明为 `test` scope，不进入主发布 jar。exec 环境下 JMH 子进程 fork 依赖自身 classpath，故使用 `-f 0` 进程内运行便于验证；如需正式性能数据，可在独立 fork 环境运行完整参数。
+> 说明：基准代码已迁移到独立子模块 `chaos-tcp-over-websockets-benchmark`（`src/main` 放 JMH 微基准，`src/test` 放端到端隧道压测），不再进入 v1 的主发布 jar。exec 环境下 JMH 子进程 fork 依赖自身 classpath，故方式二使用 `-f 0` 进程内运行，仅供快速验证；正式性能数据请用方式一。
 
 ## 构建
 
 - JDK 8+
 - Maven
 
-依赖自动下载（netty-all / commons-collections4 / logback / lombok / JMH 仅用于 `benchmark/` 子模块）。
+依赖自动下载（netty-all / commons-collections4 / logback / lombok；JMH 仅用于 `chaos-tcp-over-websockets-benchmark` 子模块）。
 
 ## 参考来源
 

@@ -23,6 +23,7 @@
     <modules>
         <module>chaos-tcp-over-websockets-v1</module>
         <module>chaos-tcp-over-websockets-v2</module>
+        <module>chaos-tcp-over-websockets-benchmark</module>
     </modules>
 
     <properties>
@@ -33,6 +34,7 @@
         <lombok.version>1.18.42</lombok.version>
         <jmh.version>1.37</jmh.version>
         <exec-maven-plugin.version>3.5.0</exec-maven-plugin.version>
+        <maven.shade.plugin.version>3.6.0</maven.shade.plugin.version>
         <hutool.version>5.8.46</hutool.version>
     </properties>
 
