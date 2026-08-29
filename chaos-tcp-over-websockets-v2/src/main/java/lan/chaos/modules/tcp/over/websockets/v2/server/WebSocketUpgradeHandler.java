@@ -108,10 +108,10 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
         }
         if ("open".equals(msg.getType())) {
             Session session = sessionManager.create(msg.getHost(), msg.getPort(), ctx.channel());
-            connectTarget(session, msg.getHost(), msg.getPort());
-            ControlMessage opened = ControlMessage.opened(session.getSessionId(), msg.getRequestId());
-            ctx.channel().writeAndFlush(new TextWebSocketFrame(ControlMessageCodec.encode(opened)));
-            log.info("v2 Server 已分配 sessionId={} 给目标 {}:{}", session.getSessionId(), msg.getHost(), msg.getPort());
+            // 异步连接目标 TCP：不能在 event-loop 线程里 sync，否则命中同线程时会抛 BlockingOperationException
+            connectTarget(session, msg.getHost(), msg.getPort(), msg.getRequestId(), ctx);
+            log.info("v2 Server 收到 open，开始异步连接目标 {}:{}, sessionId={}",
+                    msg.getHost(), msg.getPort(), session.getSessionId());
         } else if ("close".equals(msg.getType())) {
             Session session = sessionManager.remove(msg.getSessionId());
             if (session != null) {
@@ -140,7 +140,7 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
         session.getTargetTcpChannel().writeAndFlush(payload.retainedDuplicate());
     }
 
-    private void connectTarget(Session session, String host, int port) {
+    private void connectTarget(Session session, String host, int port, String requestId, ChannelHandlerContext wsCtx) {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.group(SharedEventLoopGroups.worker())
                 .channel(SystemUtil.getOsInfo().isWindows() ? NioSocketChannel.class : EpollSocketChannel.class)
@@ -152,14 +152,26 @@ public class WebSocketUpgradeHandler extends SimpleChannelInboundHandler<Object>
                         ch.pipeline().addLast(new TargetTcpHandler(session.getSessionId(), session.getWsChannel(), sessionManager));
                     }
                 });
-        try {
-            Channel channel = bootstrap.connect(host, port).sync().channel();
-            session.setTargetTcpChannel(channel);
-            log.info("v2 Server 已连接目标 TCP {}:{}, sessionId={}", host, port, session.getSessionId());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("v2 Server 连接目标 TCP 失败 {}:{}: ", host, port, e);
-        }
+        ChannelFuture cf = bootstrap.connect(host, port);
+        cf.addListener((ChannelFuture future) -> {
+            if (future.isSuccess()) {
+                Channel targetChannel = future.channel();
+                // 切回 WS 通道所在 eventLoop 更新会话并回 opened，避免跨线程竞争 targetTcpChannel
+                wsCtx.channel().eventLoop().execute(() -> {
+                    session.setTargetTcpChannel(targetChannel);
+                    ControlMessage opened = ControlMessage.opened(session.getSessionId(), requestId);
+                    wsCtx.channel().writeAndFlush(new TextWebSocketFrame(ControlMessageCodec.encode(opened)));
+                    log.info("v2 Server 已连接目标 TCP {}:{}, sessionId={}", host, port, session.getSessionId());
+                });
+            } else {
+                log.error("v2 Server 连接目标 TCP 失败 {}:{}: ", host, port, future.cause());
+                sessionManager.remove(session.getSessionId());
+                wsCtx.channel().eventLoop().execute(() -> {
+                    ControlMessage failed = ControlMessage.openFailed(session.getSessionId(), requestId);
+                    wsCtx.channel().writeAndFlush(new TextWebSocketFrame(ControlMessageCodec.encode(failed)));
+                });
+            }
+        });
     }
 
     @Override

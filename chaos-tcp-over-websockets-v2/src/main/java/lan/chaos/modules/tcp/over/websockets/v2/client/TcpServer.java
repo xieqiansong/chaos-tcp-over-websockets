@@ -68,6 +68,6 @@ public class TcpServer {
 
         TcpServer tcpServer = new TcpServer(client);
         // 阻塞监听本地端口
-        tcpServer.start(21001, "127.0.0.1", 20001);
+        tcpServer.start(21002, "127.0.0.1", 20001);
     }
 }

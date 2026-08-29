@@ -45,6 +45,14 @@ public class ControlMessage {
         return msg;
     }
 
+    public static ControlMessage openFailed(long sessionId, String requestId) {
+        ControlMessage msg = new ControlMessage();
+        msg.setType("openFailed");
+        msg.setSessionId(sessionId);
+        msg.setRequestId(requestId);
+        return msg;
+    }
+
     public static ControlMessage close(long sessionId) {
         ControlMessage msg = new ControlMessage();
         msg.setType("close");

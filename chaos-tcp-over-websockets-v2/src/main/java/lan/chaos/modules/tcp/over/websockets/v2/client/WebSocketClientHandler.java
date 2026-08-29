@@ -90,6 +90,8 @@ public class WebSocketClientHandler extends SimpleChannelInboundHandler<Object> 
         }
         if ("opened".equals(msg.getType())) {
             client.onSessionOpened(msg.getSessionId(), msg.getRequestId());
+        } else if ("openFailed".equals(msg.getType())) {
+            client.onSessionOpenFailed(msg.getRequestId());
         } else if ("close".equals(msg.getType())) {
             client.onServerClose(msg.getSessionId());
         } else {

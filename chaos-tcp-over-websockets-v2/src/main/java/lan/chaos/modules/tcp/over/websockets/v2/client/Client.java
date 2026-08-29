@@ -211,6 +211,25 @@ public class Client {
     }
 
     /**
+     * opened 失败：目标 TCP 连接不上。清理 pending 映射并释放缓冲，关闭本地 TCP，避免数据泄漏/挂起。
+     */
+    public void onSessionOpenFailed(String requestId) {
+        Channel tcpChannel = pendingByRequestId.remove(requestId);
+        if (tcpChannel == null) {
+            return;
+        }
+        log.warn("v2 Client 会话建立失败，关闭本地 TCP requestId={}", requestId);
+        Queue<ByteBuf> q = pendingWrites.remove(tcpChannel);
+        if (q != null) {
+            ByteBuf buf;
+            while ((buf = q.poll()) != null) {
+                buf.release();
+            }
+        }
+        tcpChannel.close();
+    }
+
+    /**
      * 收到 server 的 close 消息时，关闭对应本地 TCP 连接。
      */
     public void onServerClose(long sessionId) {

@@ -47,21 +47,21 @@ public class TunnelRealWorldBenchmarkTest {
             "timestamp,strategy,payloadBytes,tunnelMbPerSec,tunnelRttMs,tunnelReceived,tunnelError,"
                     + "directMbPerSec,directRttMs,directReceived,directError";
 
-    // ---- 打流参数 ----
-    private static final int CONN = 2;                 // 并发打流连接数
-    private static final int PER_CONN_MB = 16;          // 每连接打流 MB 总量
-    private static final long TIMEOUT_MS = 60000;      // 单轮回收等待上限
-
-    // 端口分配：单次运行只起一个隧道，端口固定即可（避免与其它组合冲突）；直连对照端口独立
     private static final int ECHO_PORT = 20001;     // echo 后端
-    private static final int LOCAL_PORT = 21001;    // 隧道 client 入口
+
+    // ---- 打流参数 ----
+    private static final int CONN = 1;                 // 并发打流连接数
+    private static final int PER_CONN_MB = 16;          // 每连接打流 MB 总量
+
+    private static final int LOCAL_PORT_V1 = 21001;    // 隧道 client-v1 入口
+    private static final int LOCAL_PORT_V2 = 21002;    // 隧道 client-v2 入口
 
     static class Result {
         final String name;
         int connCount;
         long receivedBytes;
         double mbPerSec;
-        long rttMs;
+        double rttMs;
         String error;
 
         Result(String name) {
@@ -75,25 +75,23 @@ public class TunnelRealWorldBenchmarkTest {
     @Test
     void runSingle() throws Exception {
         int payload = PAYLOAD;
-        String name = STRATEGY;
 
-        System.out.println("\n======== 单次组合: 策略=" + name + ", 包大小=" + payload + "B ("
-                + (payload / 1024.0) + "KB) ========");
+        System.out.println("\n======== 单次组合: 包大小=" + payload + "B (" + (payload / 1024.0) + "KB) ========");
 
         // 被测隧道
-        Result tunnel = runTraffic(LOCAL_PORT, name, payload);
+        Result tunnel_v1 = runTraffic(LOCAL_PORT_V1, "tunnel_v1", payload);
+        Result tunnel_v2 = runTraffic(LOCAL_PORT_V2, "tunnel_v2", payload);
         // 直连 echo 对照（无隧道）
-        Result direct = runDirect(payload);
+        Result direct = runTraffic(TunnelRealWorldBenchmarkTest.ECHO_PORT, "direct", payload);
 
         System.out.println("-- " + CONN + " 并发连接，每连接 " + PER_CONN_MB + "MB，合计 "
                 + (CONN * PER_CONN_MB) + "MB --");
-        printResult(tunnel);
+        printResult(tunnel_v1);
+        printResult(tunnel_v2);
         printResult(direct);
-        System.out.println("（direct=直连 echo 后端、无隧道，作为隧道固有开销基线）");
-        System.out.println("（duplicate 预期 CRASH：共享引用计数导致异步链路释放错乱）");
 
         // 以标准 CSV 格式追加到结果文件，供程序化解析（不依赖解析控制台输出）
-        appendToResultsFile(tunnel, direct);
+        appendToResultsFile(tunnel_v1, direct);
     }
 
     /**
@@ -152,22 +150,15 @@ public class TunnelRealWorldBenchmarkTest {
             System.out.printf("  %-9s CRASH: %s%n", r.name, r.error);
         } else {
             String note = "direct".equals(r.name) ? " (直连echo无隧道)" : "";
-            System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%d ms%s%n",
+            System.out.printf("  %-9s %8.2f MB/s  received=%d(%d连接)  rtt=%f ms%s%n",
                     r.name, r.mbPerSec, r.receivedBytes, r.connCount, r.rttMs, note);
         }
     }
 
     /**
-     * 直连 echo 对照组：仅起 echo 后端，打流客户端直接连 echoPort，不建隧道。
-     */
-    private Result runDirect(int payload) throws Exception {
-        return runTraffic(TunnelRealWorldBenchmarkTest.ECHO_PORT, "direct", payload);
-    }
-
-    /**
      * 并发打流：CONN 条连接同时连 host:port，每连接发 PER_CONN_MB（包大小 payload），统计端到端吞吐/RTT。
      */
-    private Result runTraffic(int port, String name, int payload) throws Exception {
+    private Result runTraffic(int port, String name, int payload) {
         Result r = new Result(name);
         r.connCount = CONN;
         int roundsPerConn = PER_CONN_MB * 1024 * 1024 / payload;
@@ -213,7 +204,7 @@ public class TunnelRealWorldBenchmarkTest {
 
         long start = System.nanoTime();
         try {
-            done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            done.await((long) 60000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ignore) {
             Thread.currentThread().interrupt();
         }
@@ -222,7 +213,7 @@ public class TunnelRealWorldBenchmarkTest {
         r.receivedBytes = total.get();
         double mb = r.receivedBytes / 1024.0 / 1024.0;
         r.mbPerSec = elapsedMs > 0 ? mb * 1000 / elapsedMs : 0;
-        r.rttMs = rttCount.get() > 0 ? (rttSum.get() / rttCount.get()) / 1_000_000 : 0;
+        r.rttMs = rttCount.get() > 0 ? (1.0 * rttSum.get() / rttCount.get()) / 1_000_000.0 : 0;
         if (r.error == null && r.receivedBytes < expected * 0.99) {
             r.error = "链路异常：仅回收 " + r.receivedBytes + "/" + expected + " 字节";
         }
