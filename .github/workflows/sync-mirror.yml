@@ -4,9 +4,9 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-  # 取消注释可启用定时同步（每天 UTC 0 点）
-  # schedule:
-  #   - cron: '0 0 * * *'
+  # 定时同步（每天 UTC 0 点）
+  schedule:
+    - cron: '0 0 * * *'
 
 jobs:
   mirror:
